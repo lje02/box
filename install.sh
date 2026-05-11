@@ -16,7 +16,7 @@ LINK_DIR="/etc/sing-box/links"
 CERT_DIR="/etc/sing-box/certs"
 BACKUP_DIR="/root/singbox_backup"
 SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
-UPDATE_URL="https://raw.githubusercontent.com/lje02/box/main/install.sh"
+UPDATE_URL="https://raw.githubusercontent.com/lje02/sing/main/install.sh"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 运行！${PLAIN}" && exit 1
 
@@ -376,12 +376,12 @@ EOF
     # ---------- 自复制脚本（避免覆盖自身） ----------
     if [[ "$0" != "/usr/local/bin/ssb" ]]; then
         cp "$0" /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb
-        echo -e "${GREEN}已安装 到 /usr/local/bin/ssb${PLAIN}"
+        echo -e "${GREEN}已安装 ssb 到 /usr/local/bin/ssb${PLAIN}"
     fi
 
     # ---------- 启动服务 ----------
     systemctl start sing-box
-    echo -e "${GREEN}安装完成...... ${PLAIN}"
+    echo -e "${GREEN}安装完成！请输入 ssb 管理。${PLAIN}"
     pause
 }
 
@@ -1306,11 +1306,11 @@ while true; do
     echo -e "  ${GREEN}7.${PLAIN} 备份 / 还原配置"
     echo -e "  ${GREEN}8.${PLAIN} 开启 BBR 网络加速"
     echo -e "  ${GREEN}9.${PLAIN} 申请 SSL 域名证书 (ACME)"
-    echo -e " ${GREEN}10.${PLAIN} 添加出站 / 用于自动 / 负载"
+    echo -e " ${GREEN}10.${PLAIN} 添加出站 /分流/自动优选/负载"
     echo -e " ${GREEN}11.${PLAIN} 更改配置 / 删除"
-    echo -e " ${GREEN}12.${PLAIN} 安装官方 WARP 并对接 Sing-box"
+    echo -e " ${GREEN}12.${PLAIN} 安装官方WARP并自动对接Sing-box"
     echo -e "-----------------------------------------------"
-    # 将控制命令并排放在底部，使用独立的高位编号防止误触
+    #底部菜单
     echo -e " ${GREEN}[88]${PLAIN} 启动  ${GREEN}[99]${PLAIN} 停止  ${GREEN}[66]${PLAIN} 重启  ${RED}[77]${PLAIN} 卸载  ${YELLOW}[0]${PLAIN} 退出"
     echo -e "==============================================="
     read -p " 请输入对应数字选择: " choice
