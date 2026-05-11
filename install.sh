@@ -381,7 +381,7 @@ EOF
 
     # ---------- 启动服务 ----------
     systemctl start sing-box
-    echo -e "${GREEN}安装完成！请输入 ssb 管理。${PLAIN}"
+    echo -e "${GREEN}安装完成${PLAIN}"
     pause
 }
 
