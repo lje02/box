@@ -138,7 +138,7 @@ apply_cert() {
 install_warp_official() {
     echo -e "${CYAN}正在自动化部署 Cloudflare WARP 官方客户端...${PLAIN}"
 
-    # 1. 安装必要的系统依赖和官方仓库 (以 Debian/Ubuntu 为例，逻辑已精简)
+    # 1. 安装必要的系统依赖和官方仓库
     if [[ -f /etc/debian_version ]]; then
         apt update && apt install -y curl gpg lsb-release jq ss-tulpn
         curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
@@ -146,39 +146,65 @@ install_warp_official() {
         apt update && apt install -y cloudflare-warp
     fi
 
-    # 2. 【自动开机自启】并立即启动后台服务
-    echo -e "${YELLOW}正在配置服务自启...${PLAIN}"
+    # 2. 启动服务并确保自启
     systemctl enable --now warp-svc
 
-    # 给服务一点启动时间
-    sleep 2
+    # 3. 【核心优化】等待 warp-svc 彻底就绪
+    # 避免后续命令因为 Socket 还没建立而报错
+    echo -ne "${YELLOW}等待 WARP 后台服务就绪...${PLAIN}"
+    local wait_count=0
+    while ! warp-cli status >/dev/null 2>&1; do
+        sleep 1
+        ((wait_count++))
+        if [ $wait_count -gt 15 ]; then
+            echo -e "\n${RED}✘ 服务启动超时，请检查 systemctl status warp-svc${PLAIN}"
+            return 1
+        fi
+    done
+    echo -e " ${GREEN}[OK]${PLAIN}"
 
-    # 3. 【自动注册】账户
-    # 使用 --accept-tos 自动接受协议，2>/dev/null 屏蔽“已注册”的报错
-    echo -e "${YELLOW}正在自动注册 WARP 账户...${PLAIN}"
-    warp-cli registration new --accept-tos 2>/dev/null
+    # 4. 【智能注册】检查是否已有账户
+    if warp-cli registration show >/dev/null 2>&1; then
+        echo -e "${GREEN}✔ 检测到已有注册信息，跳过新建注册。${PLAIN}"
+    else
+        echo -e "${YELLOW}正在自动注册 WARP 账户...${PLAIN}"
+        if ! warp-cli registration new --accept-tos; then
+            echo -e "${RED}✘ 注册失败！尝试执行 warp-cli registration delete 后重试${PLAIN}"
+            return 1
+        fi
+    fi
 
-    # 4. 【自动配置模式】设置为 Proxy 模式并固定端口
+    # 5. 配置代理模式
     echo -e "${YELLOW}正在优化代理配置...${PLAIN}"
     warp-cli mode proxy
-    # 兼容新旧版本命令，强制设置端口为 40000
+    # 尝试多种命令格式以兼容不同版本
     warp-cli proxy set-port 40000 2>/dev/null || warp-cli set-proxy-port 40000 2>/dev/null
 
-    # 5. 【自动连接】
+    # 6. 【重置连接】先断开再连接，确保状态最新
     echo -e "${YELLOW}正在尝试建立隧道连接...${PLAIN}"
+    warp-cli disconnect >/dev/null 2>&1
+    sleep 1
     warp-cli connect
 
-    # 6. 【自动验证】循环检查直到成功或超时
+    # 7. 循环验证连接状态
     local retry=0
-    while true; do
-        if [[ $(warp-cli status) == *"Connected"* ]]; then
+    while [ $retry -le 5 ]; do
+        local status=$(warp-cli status)
+        if [[ "$status" == *"Connected"* ]]; then
             echo -e "${GREEN}✔ WARP 已自动连接成功！${PLAIN}"
+            # 额外验证网络是否健康
+            if [[ "$status" == *"healthy"* ]]; then
+                echo -e "${GREEN}✔ 网络状态：健康${PLAIN}"
+            fi
             break
         fi
-        if [ $retry -gt 5 ]; then
-            echo -e "${RED}✘ 自动连接超时，请后续执行 warp-cli status 检查${PLAIN}"
+        
+        if [ $retry -eq 5 ]; then
+            echo -e "${RED}✘ 自动连接超时，当前状态：$status${PLAIN}"
+            echo -e "${YELLOW}提示：如果一直卡在 Connecting，请尝试手动设置优选 Endpoint。${PLAIN}"
             break
         fi
+        
         echo -e "${CYAN}等待连接中... ($((retry+1))/5)${PLAIN}"
         sleep 3
         ((retry++))
