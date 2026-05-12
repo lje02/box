@@ -1106,7 +1106,7 @@ while true; do
         3) manage_configs ;;
         4) chain_proxy ;;
         5) manage_routing ;;
-        6) update_all ;;
+        6) update_kernel ;;
         7) backup_restore ;;
         8) enable_bbr ;;
         9) apply_cert ;;
