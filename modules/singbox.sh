@@ -92,12 +92,45 @@ get_ip() {
 }
 
 show_status() {
+    clear
+    echo -e "${YELLOW}--- sing-box 服务状态 ---${PLAIN}"
+    
+    # 1. 基础运行状态
     if systemctl is-active --quiet sing-box; then
-        echo -e "sing-box 状态: ${GREEN}[运行中]${PLAIN}"
+        echo -e "服务状态: ${GREEN}[运行中]${PLAIN}"
     else
-        echo -e "sing-box 状态: ${RED}[未运行/已停止]${PLAIN}"
+        echo -e "服务状态: ${RED}[未运行/已停止]${PLAIN}"
+    fi
+
+    # 2. 开机自启状态
+    if systemctl is-enabled --quiet sing-box 2>/dev/null; then
+        echo -e "开机自启: ${GREEN}[已启用]${PLAIN}"
+    else
+        echo -e "开机自启: ${RED}[已禁用]${PLAIN}"
+    fi
+
+    # 3. 版本信息
+    local version=$($SB_BIN version 2>/dev/null | awk '/version/ {print $3}')
+    echo -e "软件版本: ${BLUE}${version:-未知}${PLAIN}"
+
+    # 4. 资源占用 (仅在运行时显示)
+    if systemctl is-active --quiet sing-box; then
+        local pid=$(systemctl show -p MainPID sing-box | cut -d= -f2)
+        local uptime=$(systemctl show sing-box --property=ActiveEnterTimestamp | cut -d= -f2)
+        local mem=$(ps -o rss= -p "$pid" 2>/dev/null | awk '{printf "%.2f MB", $1/1024}')
+        
+        echo -e "主进程 ID: ${CYAN}$pid${PLAIN}"
+        echo -e "运行内存: ${CYAN}$mem${PLAIN}"
+        echo -e "启动时间: ${CYAN}$uptime${PLAIN}"
+
+        # 5. 监听端口 (直观查看节点是否真的起来了)
+        echo -en "监听端口: ${PURPLE}"
+        ss -tlpn | grep "sing-box" | awk '{print $4}' | awk -F':' '{print $NF}' | sort -nu | tr '\n' ' '
+        echo -e "${PLAIN}"
     fi
     
+    echo -e "------------------------"
+    pause
 }
 
 # --- 功能模块 ---
