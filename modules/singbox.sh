@@ -573,7 +573,7 @@ edit_node() {
         *) return ;;
     esac
 
-    # 4. 保存并更新链接逻辑 (针对修改操作)
+    # 4. 保存并更新链接逻辑 
     if [[ -f "tmp.json" ]]; then
         if save_and_restart; then
             echo -e "${GREEN}✔ 配置已更新！${PLAIN}"
@@ -865,7 +865,7 @@ manage_routing() {
                     4) read -p "IP/CIDR: " val; RULE_PART=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s '{"ip_cidr": .}' -c) ;;
                 esac
 
-                # --- 3. 出站配置 (移除引发报错的非法字段) ---
+                # --- 3. 出站配置 ---
                 echo -e "\n${CYAN}3. 请配置目标出站:${PLAIN}"
                 echo "1) 粘贴链接 | 2) 手动输入 | 3) 自动优选 (URL-Test) | 4) 节点组 (Selector)"
                 read -p "选择 [1-4]: " out_mode
@@ -899,7 +899,7 @@ manage_routing() {
                         # URL-Test 测速自动切换
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{"type":"urltest","tag":$t,"outbounds":$m,"url":"https://www.gstatic.com/generate_204","interval":"3m0s"}')
                     else
-                        # 真正的 Selector (删除了引发报错的 strategy 字段)
+                        #....
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{"type":"selector","tag":$t,"outbounds":$m}')
                     fi
                 fi
@@ -1036,19 +1036,20 @@ add_outbound() {
     done
 }
 
-update_all() {
-    echo -e "${CYAN}请选择更新项:${PLAIN}"
-    echo "1. 更新管理脚本 | 2. 更新 sing-box 内核 | 0. 返回"
-    read -p "选择: " uc
-    [[ "$uc" == "0" ]] && return
-    if [ "$uc" == "1" ]; then
-        curl -Ls "$UPDATE_URL" -o /usr/local/bin/ssb
-        chmod +x /usr/local/bin/ssb
-        echo -e "${GREEN}脚本更新完成${PLAIN}"
-        exit 0
+update_kernel() {
+    # 1. 先触发备份
+    echo -e "${CYAN}正在执行更新前自动备份...${PLAIN}"
+    auto_backup
+    
+    # 2. 执行内核更新
+    echo -e "${YELLOW}正在更新 sing-box 内核...${PLAIN}"
+    if install_base; then
+        local VER=$($SB_BIN version 2>/dev/null | awk '/version/ {print $3}')
+        echo -e "${GREEN}✔ 更新成功！当前版本: ${VER:-未知}${PLAIN}"
     else
-        install_base
+        echo -e "${RED}✘ 更新失败，请检查网络或进程状态${PLAIN}"
     fi
+    pause
 }
 
 enable_bbr() {
@@ -1078,21 +1079,21 @@ enable_bbr() {
 while true; do
     clear
     echo -e "==============================================="
-    echo -e "       ${RED}Sing-box 综合管理脚本 (ssb)${PLAIN}"
+    echo -e "       ${RED}Sing-box 综合管理脚本${PLAIN}"
     echo -e "==============================================="
     show_status
     echo -e "-----------------------------------------------"
-    echo -e "  ${GREEN}1.${PLAIN} 安装 / 重装 sing-box"
+    echo -e "  ${GREEN}1.${PLAIN} 安装/重装 sing-box"
     echo -e "  ${GREEN}2.${PLAIN} 节点快速配置"
-    echo -e "  ${GREEN}3.${PLAIN} 配置 / 链接查看"
+    echo -e "  ${GREEN}3.${PLAIN} 配置/分享链接查看"
     echo -e "  ${GREEN}4.${PLAIN} 链路管理（中转/落地/链式）"
-    echo -e "  ${GREEN}5.${PLAIN} 分流设置 / 管理"
+    echo -e "  ${GREEN}5.${PLAIN} 分流设置/管理"
     echo -e "  ${GREEN}6.${PLAIN} 更新sing-box内核"
-    echo -e "  ${GREEN}7.${PLAIN} 备份 / 还原配置"
+    echo -e "  ${GREEN}7.${PLAIN} 备份/还原配置"
     echo -e "  ${GREEN}8.${PLAIN} 开启 BBR 网络加速"
     echo -e "  ${GREEN}9.${PLAIN} 申请 SSL 域名证书 (ACME)"
-    echo -e " ${GREEN}10.${PLAIN} 添加出站 /分流/自动优选/负载"
-    echo -e " ${GREEN}11.${PLAIN} 更改配置 / 删除"
+    echo -e " ${GREEN}10.${PLAIN} 添加出站/分流/自动优选/负载"
+    echo -e " ${GREEN}11.${PLAIN} 更改配置/删除"
     echo -e "-----------------------------------------------"
     #底部菜单
     echo -e " ${GREEN}[88]${PLAIN} 启动  ${GREEN}[99]${PLAIN} 停止  ${GREEN}[66]${PLAIN} 重启  ${RED}[77]${PLAIN} 卸载  ${RED}[0]${PLAIN} 退出"
