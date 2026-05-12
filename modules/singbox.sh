@@ -107,28 +107,56 @@ show_status() {
 apply_cert() {
     echo -e "${YELLOW}--- ACME 域名证书申请 ---${PLAIN}"
     read -p "请输入解析到本机的域名: " domain
-    [[ -z "$domain" ]] && echo -e "${RED}域名不能为空${PLAIN}" && pause && return
+    [[ -z "$domain" ]] && echo -e "${RED}✘ 错误：域名不能为空${PLAIN}" && pause && return
 
-    apt update && apt install -y socat cron uuid-runtime
-    if [ ! -f ~/.acme.sh/acme.sh ]; then
-        curl https://get.acme.sh | sh -s email=admin@$domain
-        source ~/.bashrc
+    # 1. 智能安装依赖
+    echo -e "${CYAN}正在安装/检查必要依赖...${PLAIN}"
+    if [[ -n $(command -v apt) ]]; then
+        apt update && apt install -y socat cron curl uuid-runtime
+    elif [[ -n $(command -v yum) ]]; then
+        yum install -y socat crontabs curl util-linux
+    elif [[ -n $(command -v dnf) ]]; then
+        dnf install -y socat crontabs curl util-linux
     fi
 
-    echo -e "${YELLOW}正在尝试申请证书...${PLAIN}"
-    systemctl stop sing-box 2>/dev/null
-    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone --server letsencrypt
-    
+    # 2. 安装 acme.sh
+    local ACME_BIN="$HOME/.acme.sh/acme.sh"
+    if [ ! -f "$ACME_BIN" ]; then
+        echo -e "${CYAN}正在安装 acme.sh 核心组件...${PLAIN}"
+        curl https://get.acme.sh | sh -s email=admin@$domain
+    fi
+
+    # 3. 处理 80 端口占用
+    local port_80_pid=$(lsof -i:80 -t 2>/dev/null)
+    if [[ -n "$port_80_pid" ]]; then
+        echo -e "${YELLOW}检测到 80 端口被占用，尝试临时释放...${PLAIN}"
+        systemctl stop nginx 2>/dev/null
+        systemctl stop apache2 2>/dev/null
+        systemctl stop sing-box 2>/dev/null
+        # 如果还在占用，强制杀掉进程（慎用，但在自动化脚本中常作为保底手段）
+        [[ -n $(lsof -i:80 -t 2>/dev/null) ]] && kill -9 $(lsof -i:80 -t 2>/dev/null) 2>/dev/null
+    fi
+
+    # 4. 申请证书
+    echo -e "${YELLOW}正在通过 Let's Encrypt 申请证书...${PLAIN}"
+    "$ACME_BIN" --issue -d "$domain" --standalone --server letsencrypt --log
+
     if [ $? -eq 0 ]; then
         local target_dir="$CERT_DIR/$domain"
         mkdir -p "$target_dir"
-        ~/.acme.sh/acme.sh --install-cert -d "$domain" \
+        "$ACME_BIN" --install-cert -d "$domain" \
             --key-file "$target_dir/server.key" \
             --fullchain-file "$target_dir/server.crt"
-        echo -e "${GREEN}✔ 证书安装成功！路径: $target_dir${PLAIN}"
+        echo -e "${GREEN}✔ 证书安装成功！${PLAIN}"
+        echo -e "路径: ${BLUE}$target_dir${PLAIN}"
     else
-        echo -e "${RED}✘ 申请失败，请确认 80 端口未被占用且域名解析正确。${PLAIN}"
+        echo -e "${RED}✘ 申请失败，原因可能如下：${PLAIN}"
+        echo -e "1. 域名解析未生效（请检查 DNS 是否指向 $IP）"
+        echo -e "2. 80 端口被防火墙拦截（请检查云平台安全组设置）"
+        echo -e "3. 申请频率过快（Let's Encrypt 有频次限制）"
     fi
+
+    # 5. 尝试恢复服务
     systemctl start sing-box 2>/dev/null
     pause
 }
