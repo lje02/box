@@ -340,7 +340,7 @@ install_base() {
     rm -rf "$TMP_DIR"          # 用完即删，不留垃圾
 
     # ---------- 创建 systemd 服务 ----------
-    # 如果外部没定义 CONFIG_FILE，赋予默认值
+    
     if [[ -z "$CONFIG_FILE" ]]; then
         CONFIG_FILE="/etc/sing-box/config.json"
         echo -e "${YELLOW}CONFIG_FILE 未定义，已默认使用 $CONFIG_FILE${PLAIN}"
@@ -364,7 +364,6 @@ EOF
     systemctl daemon-reload
     systemctl enable sing-box
 
-    # 如果存在 init_config 函数则调用，否则只创建配置目录
     if declare -F init_config &>/dev/null; then
         init_config
     else
@@ -431,8 +430,8 @@ add_node() {
                 SNI_NAME="$domain"; ALLOW_INS="0"
             else
                 CERT_PATH="/etc/sing-box/${p_type}.crt"; KEY_PATH="/etc/sing-box/${p_type}.key"
-                [[ ! -f "$CERT_PATH" ]] && openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=apple.com" -days 3650 2>/dev/null
-                SNI_NAME="apple.com"; ALLOW_INS="1"
+                [[ ! -f "$CERT_PATH" ]] && openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=amazon.com" -days 3650 2>/dev/null
+                SNI_NAME="amazon.com"; ALLOW_INS="1"
             fi
             tls_json="{\"enabled\":true,\"certificate_path\":\"$CERT_PATH\",\"key_path\":\"$KEY_PATH\"}"
             case "$p_type" in
@@ -561,6 +560,11 @@ manage_configs() {
 }
 
 edit_node() {
+    # 基础检测：sing-box 是否安装
+    if [[ ! -f "$SB_BIN" ]] && ! command -v sing-box &> /dev/null; then
+        echo -e "${RED}✘ 错误: 未检测到 sing-box，请先安装${PLAIN}"; pause; return
+    fi
+
     clear
     echo -e "${YELLOW}--- 修改/删除节点配置 ---${PLAIN}"
     local count=$(jq '.inbounds | length' "$CONFIG_FILE")
@@ -569,17 +573,19 @@ edit_node() {
     # 1. 列出节点
     jq -r '.inbounds[] | "Tag: \(.tag) | Type: \(.type) | Port: \(.listen_port)"' "$CONFIG_FILE" | cat -n
     read -p "请选择序号 (q返回): " idx
-    [[ "$idx" == "q" ]] && return
+    [[ "$idx" == "q" || -z "$idx" ]] && return
     
     local i=$(($idx-1))
     local TAG=$(jq -r ".inbounds[$i].tag" "$CONFIG_FILE")
     local TYPE=$(jq -r ".inbounds[$i].type" "$CONFIG_FILE")
 
+    [[ "$TAG" == "null" ]] && { echo -e "${RED}选择无效${PLAIN}"; pause; return; }
+
     echo -e "\n${CYAN}当前节点: $TAG ($TYPE)${PLAIN}"
     echo "1. 修改端口"
     echo "2. 修改 UUID / 密码"
     echo "3. 修改 SNI (域名)"
-    echo "4. 删除此节点"
+    echo "4. 删除此节点 (自动清理关联路由)"
     echo "0. 返回"
     read -p "请选择操作: " op
 
@@ -590,33 +596,36 @@ edit_node() {
             jq ".inbounds[$i].listen_port = ($NEW_PORT|tonumber)" "$CONFIG_FILE" > tmp.json
             ;;
         2)
-            # --- 身份凭据修改逻辑 ---
             local AUTH_FIELD=".users[0].uuid"
-            # TUIC, Hy2, Trojan, HTTP 使用 password；VLESS 使用 uuid
-            [[ "$TYPE" == "trojan" || "$TYPE" == "hysteria2" || "$TYPE" == "http" || "$TYPE" == "tuic" ]] && AUTH_FIELD=".users[0].password"
+            [[ "$TYPE" =~ ^(trojan|hysteria2|http|tuic)$ ]] && AUTH_FIELD=".users[0].password"
             [[ "$TYPE" == "shadowsocks" ]] && AUTH_FIELD=".password" 
             
-            read -p "请输入新的身份凭证 (UUID/密码): " NEW_AUTH
+            read -p "请输入新的身份凭证: " NEW_AUTH
             [[ -z "$NEW_AUTH" ]] && return
-            
-            # 如果是 TUIC，通常 UUID 和 Password 都会用到，这里我们默认修改 Password 字段
-            # 如果你想同时改 TUIC 的 UUID，可以额外增加逻辑，但一般改 Password 即可生效
             jq ".inbounds[$i]$AUTH_FIELD = \"$NEW_AUTH\"" "$CONFIG_FILE" > tmp.json
             ;;
         3)
-            read -p "请输入新的 SNI (域名): " NEW_SNI
+            read -p "请输入新的 SNI: " NEW_SNI
             [[ -z "$NEW_SNI" ]] && return
-            # 修改通用 TLS SNI
             jq ".inbounds[$i].tls.server_name = \"$NEW_SNI\" | 
                 if .inbounds[$i].tls.reality then .inbounds[$i].tls.reality.handshake.server = \"$NEW_SNI\" else . end" "$CONFIG_FILE" > tmp.json
             ;;
         4)
-            read -p "确定删除 $TAG 吗？(y/n): " confirm
+            read -p "确定删除 $TAG 及其关联路由吗？(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
-                jq "del(.inbounds[$i])" "$CONFIG_FILE" > tmp.json
+                # 核心优化：
+                # 1. 寻找 route.rules 中 inbound 匹配当前 TAG 的项并删除（支持字符串和数组形式）
+                # 2. 删除 inbounds 中对应的节点
+                jq --arg tag "$TAG" '
+                    (if .route.rules then 
+                        del(.route.rules[] | select(.inbound == $tag or (if .inbound|type=="array" then .inbound|any(. == $tag) else false end))) 
+                    else . end) | 
+                    del(.inbounds[] | select(.tag == $tag))
+                ' "$CONFIG_FILE" > tmp.json
+                
                 if save_and_restart; then
                     rm -f "$LINK_DIR/${TAG}.link"
-                    echo -e "${GREEN}✔ 节点及持久化文件已删除${PLAIN}"
+                    echo -e "${GREEN}✔ 节点及所有关联路由规则已删除${PLAIN}"
                 fi
             fi
             pause && return
@@ -624,61 +633,56 @@ edit_node() {
         *) return ;;
     esac
 
-    # 4. 保存并更新链接
+    # 4. 保存并更新链接逻辑 (针对修改操作)
     if [[ -f "tmp.json" ]]; then
         if save_and_restart; then
-            echo -e "${GREEN}✔ 配置已更新！正在重新生成链接...${PLAIN}"
+            echo -e "${GREEN}✔ 配置已更新！${PLAIN}"
             
-            local CONF=$(jq -c ".inbounds[$i]" "$CONFIG_FILE")
+            # 重新获取更新后的配置信息生成链接
+            local CONF=$(jq -c ".inbounds[] | select(.tag == \"$TAG\")" "$CONFIG_FILE")
+            [[ -z "$CONF" ]] && return # 如果是删除操作其实已经 return 了，这里做个保险
+
             local PORT=$(echo "$CONF" | jq -r .listen_port)
             local IP=$(get_ip)
             local SNI=$(echo "$CONF" | jq -r '.tls.server_name // ""')
-            local HOST=${SNI:-$IP}
+            local HOST=$IP # 默认使用 IP 连通，防止自签证书 SNI 无法解析
             local NEW_LINK=""
 
             case $TYPE in
                 vless)
                     local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
                     local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0] // ""')
-                    local WSPATH=$(echo "$CONF" | jq -r '.transport.path // ""')
-                    NEW_LINK="vless://$UUID@$HOST:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#$TAG"
+                    local FLOW=$(echo "$CONF" | jq -r '.users[0].flow // ""')
+                    NEW_LINK="vless://$UUID@$IP:$PORT?encryption=none&security=reality&sni=$SNI&fp=chrome&pbk=$(echo "$CONF" | jq -r '.tls.reality.public_key // ""')&sid=$SID&type=tcp&flow=$FLOW#$TAG"
                     ;;
-                tuic)
-                    # --- 新增 TUIC 链接还原 ---
-                    local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                trojan)
                     local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                    NEW_LINK="tuic://$UUID:$PASS@$HOST:$PORT?congestion_control=bbr&sni=$SNI&alpn=h3#$TAG"
+                    NEW_LINK="trojan://$PASS@$IP:$PORT?security=tls&sni=$SNI&allowInsecure=1#$TAG"
                     ;;
                 hysteria2)
-                    # --- 新增 Hysteria2 链接还原 ---
                     local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                    NEW_LINK="hysteria2://$PASS@$HOST:$PORT?sni=$SNI#$TAG"
+                    NEW_LINK="hysteria2://$PASS@$IP:$PORT?sni=$SNI&insecure=1#$TAG"
+                    ;;
+                tuic)
+                    local UUID=$(echo "$CONF" | jq -r '.users[0].uuid'); local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                    NEW_LINK="tuic://$UUID:$PASS@$IP:$PORT?congestion_control=bbr&sni=$SNI&alpn=h3&allow_insecure=1#$TAG"
                     ;;
                 shadowsocks)
                     local METHOD=$(echo "$CONF" | jq -r .method); local PASS=$(echo "$CONF" | jq -r .password)
-                    local SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
-                    NEW_LINK="ss://$SS_BASE64@$IP:$PORT#$TAG"
-                    ;;
-                trojan)
-                    local PASS=$(echo "$CONF" | jq -r '.users[0].password'); local INS=$(echo "$CONF" | jq -r '.tls.insecure // false')
-                    local IVAL="0"; [[ "$INS" == "true" ]] && IVAL="1"
-                    NEW_LINK="trojan://$PASS@$HOST:$PORT?security=tls&sni=$SNI&allowInsecure=$IVAL#$TAG"
-                    ;;
-                http)
-                    local USER=$(echo "$CONF" | jq -r '.users[0].username // ""'); local PASS=$(echo "$CONF" | jq -r '.users[0].password // ""')
-                    NEW_LINK="https://$USER:$PASS@$HOST:$PORT#$TAG"
+                    NEW_LINK="ss://$(echo -n "$METHOD:$PASS" | base64 -w 0)@$IP:$PORT#$TAG"
                     ;;
             esac
 
-            # 更新持久化文件
             if [[ -n "$NEW_LINK" ]]; then
                 echo "$NEW_LINK" > "$LINK_DIR/${TAG}.link"
-                echo -e "${BLUE}新链接: $NEW_LINK${PLAIN}"
+                echo -e "${BLUE}新分享链接: $NEW_LINK${PLAIN}"
             fi
         fi
+        rm -f tmp.json
     fi
     pause
 }
+
 
 # 简单的解析函数：支持 ss:// 和 socks5://
 parse_proxy_link() {
