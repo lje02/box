@@ -376,7 +376,7 @@ EOF
     # ---------- 自复制脚本（避免覆盖自身） ----------
     if [[ "$0" != "/usr/local/bin/ssb" ]]; then
         cp "$0" /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb
-        echo -e "${GREEN}已安装 ssb 到 /usr/local/bin/ssb${PLAIN}"
+        echo -e "${GREEN}安装到目录${PLAIN}"
     fi
 
     # ---------- 启动服务 ----------
