@@ -525,15 +525,33 @@ add_node() {
                         }
                     }]' "$CONFIG_FILE" > tmp.json
                 LINK="hysteria2://$PASS@$IP:$PORT?insecure=$ALLOW_INS&sni=$SNI_NAME#$TAG"
-            else # HTTPS / Trojan
+            elif [[ "$p_type" == "trojan" ]]; then
                 jq --arg port "$PORT" \
                    --arg pass "$PASS" \
                    --arg cert "$CERT_PATH" \
                    --arg key "$KEY_PATH" \
                    --arg tag "$TAG" \
-                   --arg type "$p_type" \
                    '.inbounds += [{
-                        "type": $type,
+                        "type": "trojan",
+                        "tag": $tag,
+                        "listen": "::",
+                        "listen_port": ($port|tonumber),
+                        "users": [{"password": $pass}],
+                        "tls": {
+                            "enabled": true,
+                            "certificate_path": $cert,
+                            "key_path": $key
+                        }
+                    }]' "$CONFIG_FILE" > tmp.json
+                LINK="trojan://$PASS@$SNI_NAME:$PORT?security=tls&sni=$SNI_NAME&allowInsecure=$ALLOW_INS#$TAG"
+            elif [[ "$p_type" == "http" ]]; then
+                jq --arg port "$PORT" \
+                   --arg pass "$PASS" \
+                   --arg cert "$CERT_PATH" \
+                   --arg key "$KEY_PATH" \
+                   --arg tag "$TAG" \
+                   '.inbounds += [{
+                        "type": "http",
                         "tag": $tag,
                         "listen": "::",
                         "listen_port": ($port|tonumber),
@@ -544,9 +562,11 @@ add_node() {
                             "key_path": $key
                         }
                     }]' "$CONFIG_FILE" > tmp.json
-                LINK="${p_type}://$PASS@$SNI_NAME:$PORT?security=tls&sni=$SNI_NAME&allowInsecure=$ALLOW_INS#$TAG"
+                # 注意：大部分客户端解析 https proxy 节点可能不支持标准的 URI scheme 导入
+                LINK="https://$PASS:$PASS@$SNI_NAME:$PORT?security=tls&sni=$SNI_NAME&allowInsecure=$ALLOW_INS#$TAG"
             fi
             ;;
+
 
         4) # Shadowsocks
             read -p "端口 (默认 8388): " PORT; PORT=${PORT:-8388}
