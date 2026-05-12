@@ -97,9 +97,7 @@ show_status() {
     else
         echo -e "sing-box 状态: ${RED}[未运行/已停止]${PLAIN}"
     fi
-    warp_ip=$(curl -s --proxy socks5h://127.0.0.1:40000 --max-time 2 https://ip.gs || echo "未连接")
-    echo -e "WARP 落地 IP: ${CYAN}$warp_ip${PLAIN}"
-
+    
 }
 
 # --- 功能模块 ---
@@ -1087,7 +1085,6 @@ while true; do
     echo -e "  ${GREEN}9.${PLAIN} 申请 SSL 域名证书 (ACME)"
     echo -e " ${GREEN}10.${PLAIN} 添加出站 /分流/自动优选/负载"
     echo -e " ${GREEN}11.${PLAIN} 更改配置 / 删除"
-    echo -e " ${GREEN}12.${PLAIN} 安装官方WARP对接Sing-box"
     echo -e "-----------------------------------------------"
     #底部菜单
     echo -e " ${GREEN}[88]${PLAIN} 启动  ${GREEN}[99]${PLAIN} 停止  ${GREEN}[66]${PLAIN} 重启  ${RED}[77]${PLAIN} 卸载  ${RED}[0]${PLAIN} 退出"
@@ -1106,7 +1103,6 @@ while true; do
         9) apply_cert ;;
         10) add_outbound ;;
         11) edit_node ;;
-        12) warp_one_click ;;
         88)
             echo -e "${YELLOW}正在启动 Sing-box...${PLAIN}"
             systemctl start sing-box
