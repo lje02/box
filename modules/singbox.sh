@@ -133,7 +133,7 @@ apply_cert() {
         systemctl stop nginx 2>/dev/null
         systemctl stop apache2 2>/dev/null
         systemctl stop sing-box 2>/dev/null
-        # 如果还在占用，强制杀掉进程（慎用，但在自动化脚本中常作为保底手段）
+        # 如果还在占用，强制杀掉进程
         [[ -n $(lsof -i:80 -t 2>/dev/null) ]] && kill -9 $(lsof -i:80 -t 2>/dev/null) 2>/dev/null
     fi
 
