@@ -185,7 +185,7 @@ wait_for_warp_ready() {
     waited=0
     while true; do
         # warp-cli status 在未就绪时会有错误输出或非标准返回，捕获并判断
-        out=$(warp-cli status 2>&1) || out="$out"
+        out=$(warp-cli --accept-tos status 2>&1) || out="$out"
         # 当输出包含 Registered/Not registered/Connected/Disconnected 等关键词，即视为可响应
         if [[ "$out" == *"Registered"* ]] || [[ "$out" == *"Not registered"* ]] || [[ "$out" == *"Connected"* ]] || [[ "$out" == *"Disconnected"* ]]; then
             echo -e "${GREEN}✔ warp-cli 已就绪："
@@ -228,7 +228,7 @@ install_warp_official() {
 
     # 3. 【自动注册】账户（仅在未注册时执行）
     echo -e "${YELLOW}正在检测 WARP 注册状态...${PLAIN}"
-    status=$(warp-cli status 2>/dev/null || true)
+    status=$(warp-cli --accept-tos status 2>/dev/null 
     if [[ "$status" == *"Registered"* ]]; then
         echo -e "${GREEN}✔ 已检测到已注册的 WARP 账户，跳过注册步骤。${PLAIN}"
     else
