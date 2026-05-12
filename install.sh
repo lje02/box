@@ -1,7 +1,7 @@
 #!/bin/bash
 # 一键部署 VPS 管理面板 (vp)
 
-REPO_URL="https://raw.githubusercontent.com/lje02/liang/main/vp"
+REPO_URL="https://raw.githubusercontent.com/lje02/vp/main"
 INSTALL_DIR="/usr/local/bin"
 MODULES_DIR="/usr/local/share/vp_modules"
 
