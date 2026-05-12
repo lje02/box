@@ -162,183 +162,57 @@ apply_cert() {
 }
 
 # --- 1. 先定义安装函数 ---
-wait_for_warp_ready() {
-    # 等待 warp-svc systemd 服务变为 active，并等待 warp-cli 能够响应
-    local svc_timeout=60   # 等待服务启动的最大秒数
-    local cli_timeout=60   # 等待 warp-cli 响应的最大秒数
-    local interval=2
-    local waited=0
-
-    echo -e "${CYAN}等待 systemd 启动 warp-svc 服务...${PLAIN}"
-    while ! systemctl is-active --quiet warp-svc; do
-        if [ $waited -ge $svc_timeout ]; then
-            echo -e "${RED}✘ warp-svc 启动超时（>${svc_timeout}s），请检查 journalctl -u warp-svc 日志${PLAIN}"
-            return 1
-        fi
-        sleep $interval
-        waited=$((waited + interval))
-    done
-    echo -e "${GREEN}✔ warp-svc 已处于 active 状态${PLAIN}"
-
-    # 确认 warp-cli 可用（有时服务 active 但 DBus/接口尚未就绪）
-    echo -e "${CYAN}等待 warp-cli 接口可用...${PLAIN}"
-    waited=0
-    while true; do
-        # warp-cli status 在未就绪时会有错误输出或非标准返回，捕获并判断
-        out=$(warp-cli status 2>&1) || out="$out"
-        # 当输出包含 Registered/Not registered/Connected/Disconnected 等关键词，即视为可响应
-        if [[ "$out" == *"Registered"* ]] || [[ "$out" == *"Not registered"* ]] || [[ "$out" == *"Connected"* ]] || [[ "$out" == *"Disconnected"* ]]; then
-            echo -e "${GREEN}✔ warp-cli 已就绪："
-            echo -e "${PLAIN}$out"
-            return 0
-        fi
-
-        if [ $waited -ge $cli_timeout ]; then
-            echo -e "${RED}✘ warp-cli 可用性检测超时（>${cli_timeout}s），输出为：${PLAIN}"
-            echo -e "${PLAIN}$out"
-            return 1
-        fi
-
-        sleep $interval
-        waited=$((waited + interval))
-    done
-}
-
-# 注册改造：普通方式 -> script(pty) -> expect（三步，优雅降级）
-try_register_non_tty() {
-    echo -e "${YELLOW}尝试注册 WARP（普通方式 -> script -> expect）...${PLAIN}"
-
-    # 1) 直接尝试（非交互）
-    if warp-cli registration new --accept-tos >/dev/null 2>&1; then
-        echo -e "${GREEN}✔ 通过普通方式注册成功${PLAIN}"
-        return 0
-    fi
-
-    # 捕获失败输出（用于诊断）
-    echo -e "${CYAN}普通注册失败，尝试通过伪终端（script）重试...${PLAIN}"
-
-    # 2) 使用 script 创建 pty（script -q -c 'cmd' /dev/null）
-    if command -v script >/dev/null 2>&1; then
-        if script -q -c "warp-cli registration new --accept-tos" /dev/null >/dev/null 2>&1; then
-            echo -e "${GREEN}✔ 通过 script(pty) 注册成功${PLAIN}"
-            return 0
-        else
-            echo -e "${YELLOW}script 方式注册失败，尝试 expect 模拟交互...${PLAIN}"
-        fi
-    else
-        echo -e "${YELLOW}系统未检测到 script 工具，跳过此方法。${PLAIN}"
-    fi
-
-    # 3) 使用 expect 模拟交互（若存在）
-    if command -v expect >/dev/null 2>&1; then
-        echo -e "${CYAN}使用 expect 模拟交互注册（最长等待 120s）...${PLAIN}"
-        expect <<'EXPECT_EOF'
-log_user 0
-set timeout 120
-spawn warp-cli registration new --accept-tos
-# 若出现需要用户在控制台按回车或确认的提示，发送回车并继续
-expect {
-    -re "(Press|press).*(Enter|ENTER)" {
-        send "\r"
-        exp_continue
-    }
-    -re "Open this URL|Please open" {
-        # 有些版本会输出 URL 并要求在浏览器操作，直接继续等待结束
-        exp_continue
-    }
-    eof
-}
-catch {wait result}
-set st [lindex $result 3]
-exit $st
-EXPECT_EOF
-        rc=$?
-        if [ $rc -eq 0 ]; then
-            echo -e "${GREEN}✔ expect 注册成功${PLAIN}"
-            return 0
-        else
-            echo -e "${RED}✘ expect 注册失败（返回码 $rc）。请人工检查 warp-cli status 与 journalctl -u warp-svc 日志${PLAIN}"
-            return $rc
-        fi
-    else
-        echo -e "${RED}✘ 无法使用 expect（未安装）。请安装 expect 后重试：apt install -y expect${PLAIN}"
-        return 2
-    fi
-}
-
 install_warp_official() {
     echo -e "${CYAN}正在自动化部署 Cloudflare WARP 官方客户端...${PLAIN}"
 
     # 1. 安装必要的系统依赖和官方仓库 (以 Debian/Ubuntu 为例，逻辑已精简)
     if [[ -f /etc/debian_version ]]; then
-        apt update && apt install -y curl gpg lsb-release jq expect
-        # 注意：原脚本中有 ss-tulpn（可能为误写），这里不强制安装该包
+        apt update && apt install -y curl gpg lsb-release jq ss-tulpn
         curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
         apt update && apt install -y cloudflare-warp
     fi
 
     # 2. 【自动开机自启】并立即启动后台服务
-    echo -e "${YELLOW}正在配���服务自启...${PLAIN}"
+    echo -e "${YELLOW}正在配置服务自启...${PLAIN}"
     systemctl enable --now warp-svc
 
-    # 等待服务就绪（包含 systemd active + warp-cli 可响应）
-    if ! wait_for_warp_ready; then
-        echo -e "${RED}✘ warp 服务未能在预期时间内就绪，安装流程中止。${PLAIN}"
-        return 1
-    fi
+    # 给服务一点启动时间
+    sleep 2
 
-    # 3. 【自动注册】账户（仅在未注册时执行） — 使用非交互兼容策略
-    echo -e "${YELLOW}正在检测 WARP 注册状态...${PLAIN}"
-    status=$(warp-cli status 2>/dev/null || true)
-    if [[ "$status" == *"Registered"* ]]; then
-        echo -e "${GREEN}✔ 已检测到已注册的 WARP 账户，跳过注册步骤。${PLAIN}"
-    else
-        echo -e "${YELLOW}未检测到已注册账户，开始自动注册流程...${PLAIN}"
-        if try_register_non_tty; then
-            echo -e "${GREEN}✔ 注册流程完成${PLAIN}"
-        else
-            echo -e "${RED}✘ 自动注册最终失败。若环境无 systemd/dbus 或受限（如某些容器），请在有交互的终端上手动运行：warp-cli registration new --accept-tos${PLAIN}"
-        fi
-    fi
+    # 3. 【自动注册】账户
+    # 使用 --accept-tos 自动接受协议，2>/dev/null 屏蔽“已注册”的报错
+    echo -e "${YELLOW}正在自动注册 WARP 账户...${PLAIN}"
+    warp-cli registration new --accept-tos 2>/dev/null
 
     # 4. 【自动配置模式】设置为 Proxy 模式并固定端口
-    echo -e "${YELLOW}正在优化���理配置...${PLAIN}"
+    echo -e "${YELLOW}正在优化代理配置...${PLAIN}"
     warp-cli mode proxy
     # 兼容新旧版本命令，强制设置端口为 40000
     warp-cli proxy set-port 40000 2>/dev/null || warp-cli set-proxy-port 40000 2>/dev/null
 
     # 5. 【自动连接】
     echo -e "${YELLOW}正在尝试建立隧道连接...${PLAIN}"
-    warp-cli connect || true
+    warp-cli connect
 
     # 6. 【自动验证】循环检查直到成功或超时
     local retry=0
-    local max_retry=10
     while true; do
-        status=$(warp-cli status 2>&1 || true)
-        if [[ "$status" == *"Connected"* ]]; then
+        if [[ $(warp-cli status) == *"Connected"* ]]; then
             echo -e "${GREEN}✔ WARP 已自动连接成功！${PLAIN}"
             break
         fi
-        if [ $retry -ge $max_retry ]; then
-            echo -e "${RED}✘ 自动连���超时（$((max_retry * 3))s），请后续执行 warp-cli status 检查${PLAIN}"
-            echo -e "${PLAIN}当前 warp-cli status 输出："
-            echo -e "${PLAIN}$status"
+        if [ $retry -gt 5 ]; then
+            echo -e "${RED}✘ 自动连接超时，请后续执行 warp-cli status 检查${PLAIN}"
             break
         fi
-        echo -e "${CYAN}等待连接中... ($((retry+1))/${max_retry}) 当前状态：${PLAIN}"
-        echo -e "${PLAIN}$status"
+        echo -e "${CYAN}等待连接中... ($((retry+1))/5)${PLAIN}"
         sleep 3
         ((retry++))
     done
 
-    # 7. 打印落地 IP（优先通过 SOCKS5 本地端口获取）
-    local warp_ip
-    warp_ip=$(curl -s --socks5-hostname 127.0.0.1:40000 --max-time 5 https://ip.gs 2>/dev/null || true)
-    if [[ -z "$warp_ip" ]]; then
-        warp_ip="获取失败（通过 SOCKS5 端口 40000）"
-    fi
+    # 7. 打印落地 IP
+    local warp_ip=$(curl -s --proxy socks5h://127.0.0.1:40000 --max-time 5 https://ip.gs || echo "获取失败")
     echo -e "${GREEN}当前 WARP 出口 IP: $warp_ip${PLAIN}"
 }
 
