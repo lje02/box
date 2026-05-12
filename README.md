@@ -1,12 +1,8 @@
-sing-box安装脚本，快捷方式ssb
+sing-box安装脚本，快捷方式vp
 
-curl -Ls https://raw.githubusercontent.com/lje02/box/main/install.sh -o /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb && ssb
-
-# sing-box 综合管理脚本 (ssb)
+# sing-box 综合管理脚本 
 
 `ssb` (sing-box stack bash) 是一个为 Linux 服务器打造的、全功能自动化管理工具。它通过模块化的 Bash 脚本，将复杂的 `sing-box` JSON 配置转化为直观的交互式菜单，旨在提供“原子化”的操作体验。
-
----
 
 ## 🚀 核心特性
 
@@ -25,5 +21,5 @@ curl -Ls https://raw.githubusercontent.com/lje02/box/main/install.sh -o /usr/loc
 在 Root 用户下执行以下命令即可启动管理面板：
 
 ```bash
-curl -Ls [https://raw.githubusercontent.com/lje02/sing/main/install.sh](https://raw.githubusercontent.com/lje02/sing/main/install.sh) -o /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb && ssb
+curl -sSL https://raw.githubusercontent.com/lje02/vp/main/install.sh | bash
 
