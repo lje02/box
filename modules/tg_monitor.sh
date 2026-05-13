@@ -107,7 +107,6 @@ while true; do
                     disk=$(df -h / | awk 'NR==2{print $5}')
                     containers=$(docker ps -q 2>/dev/null | wc -l)
                     msg="📊 <b>系统状态</b>"
-                    msg+="-----------------------------"
                     msg+="🧠 负载: <code>$load</code>"
                     msg+="💾 内存: ${mem_used}MB / ${mem_total}MB"
                     msg+="💿 磁盘: $disk 已用"
