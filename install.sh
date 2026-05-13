@@ -36,15 +36,16 @@ if [ ${#modules[@]} -eq 0 ]; then
     echo "使用静态模块列表"
 fi
 
-echo "下载模块..."
+echo -n "下载模块中"
 for mod in "${modules[@]}"; do
-    echo "  -> $mod"
-    if ! curl -sSL "$REPO_URL/modules/$mod" -o "$MODULES_DIR/$mod"; then
-        echo "    [警告] 模块 $mod 下载失败，跳过"
-        continue
+    if curl -sSL "$REPO_URL/modules/$mod" -o "$MODULES_DIR/$mod" 2>/dev/null; then
+        chmod +x "$MODULES_DIR/$mod" 2>/dev/null
+        echo -n "."
+    else
+        echo -n "!"
     fi
-    chmod +x "$MODULES_DIR/$mod" 2>/dev/null
 done
+echo " 完成"
 
 echo ""
 echo "安装完成！输入 'vp' 即可启动管理面板。"
