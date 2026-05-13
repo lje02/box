@@ -319,10 +319,57 @@ enable_portscan_protection() {
     fi
 
     local jail_local="/etc/fail2ban/jail.local"
-    # 备份
+    local action_dir="/etc/fail2ban/action.d"
+    # 备份原配置
     cp "$jail_local" "${jail_local}.bak"
 
-    # ---------- recidive (已存在则开启，不存在则创建) ----------
+    # ---------- 1. 确保 iptables-allports action 存在 ----------
+    if [ ! -f "$action_dir/iptables-allports.conf" ]; then
+        printf "${YELLOW}创建 iptables-allports 动作...${NC}\n"
+        mkdir -p "$action_dir"
+        cat > "$action_dir/iptables-allports.conf" <<'EOF'
+[Definition]
+actionstart = <iptables> -N f2b-<name>
+              <iptables> -A f2b-<name> -j <returntype>
+              <iptables> -I <chain> -p <protocol> -j f2b-<name>
+actionstop = <iptables> -D <chain> -p <protocol> -j f2b-<name>
+             <iptables> -F f2b-<name>
+             <iptables> -X f2b-<name>
+actioncheck = <iptables> -n -L <chain> | grep -q 'f2b-<name>[ \t]'
+actionban = <iptables> -I f2b-<name> 1 -s <ip> -j <blocktype>
+actionunban = <iptables> -D f2b-<name> -s <ip> -j <blocktype>
+[Init]
+name = default
+protocol = all
+chain = INPUT
+EOF
+    fi
+
+    # ---------- 2. 创建 portscan 过滤器 ----------
+    cat > /etc/fail2ban/filter.d/portscan.conf <<'EOF'
+[Definition]
+failregex = ^\s*\S+\s+\S+\s+\[<HOST>\]\s+TCP\s+.*\s+SYN
+ignoreregex =
+EOF
+
+    # ---------- 3. 处理日志源 ----------
+    local portscan_backend=""
+    local logpath_entry=""
+
+    # 若 journald 可用，优先使用 systemd backend（无需 kern.log）
+    if command -v journalctl &>/dev/null && fail2ban-server -t --dp 2>&1 | grep -q 'systemd'; then
+        portscan_backend="backend = systemd"
+    elif [ -f /var/log/kern.log ]; then
+        logpath_entry="logpath = /var/log/kern.log"
+    else
+        printf "${RED}✘ 系统既无 /var/log/kern.log 也不支持 systemd backend。${NC}\n"
+        printf "   portscan jail 无法获取扫描日志，启用取消。\n"
+        read -p "按回车键继续..." dummy
+        return
+    fi
+
+    # ---------- 4. 写入 jail ----------
+    # 先确保有 recidive（若已有则只开启）
     if grep -q '^\[recidive\]' "$jail_local"; then
         sed -i '/^\[recidive\]/,/^\[/ s/^enabled.*/enabled = true/' "$jail_local"
     else
@@ -331,39 +378,32 @@ enable_portscan_protection() {
 [recidive]
 enabled  = true
 logpath  = /var/log/fail2ban.log
-banaction = iptables-multiport[name=recidive]
+banaction = iptables-allports[name=recidive]
 bantime  = 1w
 findtime = 1d
 maxretry = 3
 EOF
     fi
 
-    # ---------- portscan jail (使用 iptables-multiport，更通用) ----------
-    cat >> "$jail_local" <<'EOF'
+    # 添加 portscan jail
+    cat >> "$jail_local" <<EOF
 
 [portscan]
 enabled  = true
 filter   = portscan
-logpath  = /var/log/kern.log
+${logpath_entry}
+${portscan_backend}
 maxretry = 10
 findtime = 60
 bantime  = 86400
-port     = 0:65535
-banaction = iptables-multiport[name=portscan]
+banaction = iptables-allports[name=portscan]
 EOF
 
-    # 创建 portscan 过滤器
-    cat > /etc/fail2ban/filter.d/portscan.conf <<'EOF'
-[Definition]
-failregex = ^\s*\S+\s+\S+\s+\[<HOST>\]\s+TCP\s+.*\s+SYN
-ignoreregex =
-EOF
-
-    # 添加 iptables 日志规则（只在 INPUT 链记录 NEW 状态 SYN 包）
+    # ---------- 5. 添加 iptables 日志记录规则 ----------
     iptables -C INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan: " 2>/dev/null || \
     iptables -I INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan: "
 
-    # ---------- 关键：检查配置语法 ----------
+    # ---------- 6. 语法检查 ----------
     printf "${YELLOW}验证配置...${NC}\n"
     if fail2ban-server -t 2>/dev/null; then
         printf "${GREEN}配置语法正确，正在重载服务...${NC}\n"
@@ -377,12 +417,6 @@ EOF
     else
         printf "${RED}✘ 配置文件语法错误，已自动回滚。${NC}\n"
         cp "${jail_local}.bak" "$jail_local"
-    fi
-
-    # 如果 kern.log 不存在，提示可改用 journald
-    if [ ! -f /var/log/kern.log ]; then
-        printf "${YELLOW}注意：/var/log/kern.log 未找到，portscan jail 可能无法匹配日志。${NC}\n"
-        printf "若使用 journald，可编辑 %s 将 portscan 的 backend 改为 systemd。${NC}\n" "$jail_local"
     fi
 
     read -p "按回车键继续..." dummy
