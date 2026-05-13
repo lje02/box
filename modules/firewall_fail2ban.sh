@@ -289,6 +289,136 @@ uninstall_fail2ban() {
     if [ "$OS_FAMILY" = "debian" ]; then apt-get purge -y fail2ban; else yum remove -y fail2ban; fi
     printf "${GREEN}Fail2Ban 已卸载${NC}\n"
 }
+# ---------- 防扫描 / 黑名单/地域限制----------
+advanced_defense_menu() {
+    while true; do
+        clear
+        printf "${BLUE}===== 高级入侵防御 =====${NC}\n"
+        printf "Fail2Ban: "; detect_fail2ban
+        echo "1. 启用防端口扫描 (recidive+portscan)"
+        echo "2. IP 黑名单管理 (ipset)"
+        echo "3. GeoIP 地域封锁 (参考说明)"
+        echo "0. 返回 Fail2Ban 菜单"
+        read -p "选择: " ad_choice
+        case $ad_choice in
+            1) enable_portscan_protection ;;
+            2) manage_ip_blacklist ;;
+            3) show_geoip_guide ;;
+            0) break ;;
+            *) printf "${RED}无效选项${NC}\n"; sleep 1 ;;
+        esac
+    done
+}
+
+# ---------- 防端口扫描 ----------
+enable_portscan_protection() {
+    # 确保 fail2ban 运行
+    if ! pgrep -x fail2ban-server &>/dev/null; then
+        printf "${RED}Fail2Ban 未运行，请先启动。${NC}\n"
+        read -p "按回车键继续..." dummy
+        return
+    fi
+
+    local jail_local="/etc/fail2ban/jail.local"
+    cp "$jail_local" "${jail_local}.bak"
+
+    # recidive
+    if grep -q '^\[recidive\]' "$jail_local"; then
+        sed -i '/^\[recidive\]/,/^\[/ s/^enabled.*/enabled = true/' "$jail_local"
+    else
+        cat >> "$jail_local" <<'EOF'
+
+[recidive]
+enabled  = true
+logpath  = /var/log/fail2ban.log
+banaction = iptables-allports
+bantime  = 1w
+findtime = 1d
+maxretry = 3
+EOF
+    fi
+
+    # portscan jail
+    cat >> "$jail_local" <<'EOF'
+
+[portscan]
+enabled  = true
+filter   = portscan
+logpath  = /var/log/kern.log
+maxretry = 10
+findtime = 60
+bantime  = 86400
+port     = 0:65535
+banaction = iptables-allports
+EOF
+
+    # filter
+    cat > /etc/fail2ban/filter.d/portscan.conf <<'EOF'
+[Definition]
+failregex = ^\s*\S+\s+\S+\s+\[<HOST>\]\s+TCP\s+.*\s+SYN
+ignoreregex =
+EOF
+
+    # iptables 日志规则
+    iptables -C INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan detected: " 2>/dev/null || \
+    iptables -I INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan detected: "
+
+    systemctl restart fail2ban 2>/dev/null || service fail2ban restart
+    printf "${GREEN}防端口扫描已启用。${NC}\n"
+    read -p "按回车键继续..." dummy
+}
+
+# ---------- IP 黑名单管理 ----------
+manage_ip_blacklist() {
+    while true; do
+        clear
+        printf "${BLUE}===== IP 黑名单 (ipset) =====${NC}\n"
+        echo "1. 查看黑名单"
+        echo "2. 添加 IP"
+        echo "3. 移除 IP"
+        echo "4. 清空黑名单"
+        echo "0. 返回"
+        read -p "选择: " ip_choice
+        case $ip_choice in
+            1) ipset list blacklist 2>/dev/null || echo "黑名单未创建"; read -p "按回车键继续..." dummy ;;
+            2)
+                read -p "输入 IP: " ban_ip
+                [ -z "$ban_ip" ] && continue
+                ipset create blacklist hash:ip timeout 0 -exist
+                ipset add blacklist "$ban_ip" -exist
+                iptables -C INPUT -m set --match-set blacklist src -j DROP 2>/dev/null || \
+                iptables -I INPUT -m set --match-set blacklist src -j DROP
+                printf "${GREEN}已添加 %s${NC}\n" "$ban_ip"
+                read -p "按回车键继续..." dummy ;;
+            3)
+                read -p "输入 IP: " unban_ip
+                ipset del blacklist "$unban_ip" 2>/dev/null
+                printf "${GREEN}已移除${NC}\n"
+                read -p "按回车键继续..." dummy ;;
+            4)
+                ipset flush blacklist 2>/dev/null
+                printf "${GREEN}黑名单已清空${NC}\n"
+                read -p "按回车键继续..." dummy ;;
+            0) break ;;
+            *) printf "${RED}无效选项${NC}\n"; sleep 1 ;;
+        esac
+    done
+}
+
+# ---------- GeoIP 指引 ----------
+show_geoip_guide() {
+    clear
+    printf "${BLUE}===== GeoIP 地域封锁指南 =====${NC}\n"
+    echo "需要 xt_geoip 模块，请手动执行："
+    echo "  apt install xtables-addons-common libtext-csv-xs-perl"
+    echo "  /usr/lib/xtables-addons/xt_geoip_dl"
+    echo "  mkdir -p /usr/share/xt_geoip"
+    echo "  /usr/lib/xtables-addons/xt_geoip_build -D /usr/share/xt_geoip *.csv"
+    echo ""
+    echo "然后添加规则，例如："
+    echo "  iptables -I INPUT -m geoip --src-cc CN -j DROP"
+    read -p "按回车键继续..." dummy
+}
 
 fail2ban_menu() {
     while true; do
@@ -299,6 +429,7 @@ fail2ban_menu() {
         echo "2. 查看拦截记录"
         echo "3. 基础参数配置"
         echo "4. 卸载 Fail2Ban"
+        echo "5. 防扫/黑名单/地域限制"
         echo "0. 返回上级菜单"
         read -p "请选择操作: " fb_choice
         case $fb_choice in
@@ -306,6 +437,7 @@ fail2ban_menu() {
             2) show_ban_records ;;
             3) config_fail2ban ;;
             4) uninstall_fail2ban ;;
+            5) advanced_defense_menu ;;
             0) break ;;
             *) printf "${RED}无效选项${NC}\n" ;;
         esac
