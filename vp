@@ -147,18 +147,16 @@ run_module() {
 main_menu() {
     while true; do
         clear
+        echo -e "--------------------------------------------"
         printf "${GREEN}========== VPS 综合管理面板 (vp) ==========${PLAIN}\n"
-        printf "${BLUE}--- 本地运维 ---${PLAIN}\n"
+        echo -e "--------------------------------------------"
         echo -e "1. 防火墙 / Fail2Ban 管理"
         echo -e "2. 系统信息与优化 (BBR/Swap)"
-        printf "${BLUE}--- 业务管理 ---${PLAIN}\n"
         echo -e "3. sing-box 管理"
         echo -e "4. 系统实时监控"
         echo -e "5. 流量统计"
         echo -e "6. 日志查看/分析"
-        printf "${BLUE}--- 安全加固 ---${PLAIN}\n"
         echo -e "7. 密钥生成/禁用密码"
-        printf "${BLUE}--- 远程管理 ---${PLAIN}\n"
         echo -e "8. 远程 SSH 跳转"
         echo -e "--------------------------------------------"
         echo -e "u. 更新全部 (主控+模块)   x. 卸载   0. 退出"
