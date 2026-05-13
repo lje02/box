@@ -79,7 +79,7 @@ remote_jump_menu() {
             done < "$REMOTE_CONF"
             local max_index=$((i-1))
         fi
-        printf "--------------------------------------\n"
+        
         printf "a. 添加主机  d. 删除主机  0. 返回主菜单\n"
         read -p "选择编号: " choice
         case "$choice" in
