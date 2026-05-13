@@ -1,5 +1,5 @@
 #!/bin/bash
-# 远程监控机器人 (Telegram) - 仅提供状态查询，无控制功能
+# Telegram 远程监控模块（支持流量统计）
 
 if [ -z "$VPS_COMMON_LOADED" ]; then
     source /usr/local/share/vp_modules/common.sh 2>/dev/null || true
@@ -9,11 +9,11 @@ TG_CONF="/etc/vp_tg.conf"
 LISTENER_SCRIPT="/usr/local/bin/vp_tg_listener.sh"
 PID_FILE="/var/run/vp_tg_bot.pid"
 
-# ---------- 生成监听脚本（精简版） ----------
+# ---------- 生成监听脚本（含 /traffic 命令）----------
 generate_listener() {
-    cat > "$LISTENER_SCRIPT" <<'EOF'
+    cat > "$LISTENER_SCRIPT" <<'ENDOFSCRIPT'
 #!/bin/bash
-# VPS 远程监控机器人 (只读)
+# VPS 远程监控机器人 (只读 + 流量统计)
 
 TG_CONF="/etc/vp_tg.conf"
 [ ! -f "$TG_CONF" ] && exit 1
@@ -30,14 +30,49 @@ reply() {
         --data-urlencode "text=$text" >/dev/null
 }
 
-# 发送“正在输入”状态
 send_typing() {
     curl -s -X POST "https://api.telegram.org/bot$TG_BOT_TOKEN/sendChatAction" \
         -d chat_id="$1" \
         -d action="typing" >/dev/null
 }
 
-echo "VPS 监控机器人启动 (只读模式)"
+# ---- 流量统计辅助函数 ----
+get_traffic() {
+    if ! command -v vnstat &>/dev/null; then
+        echo "⚠️ vnstat 未安装，无法统计流量。"
+        return 1
+    fi
+    local iface=$(ip route | grep default | awk '{print $5}' | head -n1)
+    [ -z "$iface" ] && iface=$(ip -br link | awk '$1!="lo"{print $1; exit}')
+    if [ -z "$iface" ]; then
+        echo "⚠️ 未找到活跃网卡。"
+        return 1
+    fi
+    echo "📡 网卡: <b>$iface</b>"
+    echo "------------------------------"
+    # 今日
+    today_rx=$(vnstat -i "$iface" --oneline | awk -F';' '{print $4}')
+    today_tx=$(vnstat -i "$iface" --oneline | awk -F';' '{print $5}')
+    [ -z "$today_rx" ] && today_rx="N/A"
+    [ -z "$today_tx" ] && today_tx="N/A"
+    echo "📅 今日: ⬇️ ${today_rx} / ⬆️ ${today_tx}"
+
+    # 本月
+    month_rx=$(vnstat -i "$iface" -m --oneline | tail -1 | awk -F';' '{print $4}')
+    month_tx=$(vnstat -i "$iface" -m --oneline | tail -1 | awk -F';' '{print $5}')
+    [ -z "$month_rx" ] && month_rx="N/A"
+    [ -z "$month_tx" ] && month_tx="N/A"
+    echo "🗓 本月: ⬇️ ${month_rx} / ⬆️ ${month_tx}"
+
+    # 总量
+    total_rx=$(vnstat -i "$iface" --oneline | awk -F';' '{print $9}')
+    total_tx=$(vnstat -i "$iface" --oneline | awk -F';' '{print $10}')
+    [ -z "$total_rx" ] && total_rx="N/A"
+    [ -z "$total_tx" ] && total_tx="N/A"
+    echo "♾ 总计: ⬇️ ${total_rx} / ⬆️ ${total_tx}"
+}
+
+echo "VPS 监控机器人启动 (只读模式 + 流量)"
 
 while true; do
     updates=$(curl -s "https://api.telegram.org/bot$TG_BOT_TOKEN/getUpdates?offset=$OFFSET&timeout=30")
@@ -61,6 +96,7 @@ while true; do
                     msg+="📊 /status - 系统状态\n"
                     msg+="🌐 /ip - 公网 IP\n"
                     msg+="⏱ /uptime - 运行时间\n"
+                    msg+="📈 /traffic - 流量统计 (需 vnstat)\n"
                     reply "$chat_id" "$msg"
                     ;;
 
@@ -88,10 +124,14 @@ while true; do
                 "/uptime")
                     reply "$chat_id" "⏱ 系统已运行: $(uptime -p)"
                     ;;
+
+                "/traffic")
+                    traffic_msg=$(get_traffic 2>&1)
+                    reply "$chat_id" "<b>📈 流量统计</b>\n${traffic_msg}"
+                    ;;
             esac
         fi
 
-        # 更新 offset
         next=$((update_id + 1))
         echo $next > /tmp/vp_tg_offset
     done
@@ -100,11 +140,11 @@ while true; do
         OFFSET=$(cat /tmp/vp_tg_offset)
     fi
 done
-EOF
+ENDOFSCRIPT
     chmod +x "$LISTENER_SCRIPT"
 }
 
-# ---------- 配置向导 ----------
+# ---------- 配置 ----------
 configure_bot() {
     printf "${BLUE}===== Telegram 机器人配置 =====${NC}\n"
     read -p "Bot Token: " token
