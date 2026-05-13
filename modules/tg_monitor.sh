@@ -91,12 +91,12 @@ while true; do
 
             case "$text" in
                 "/start" | "/help")
-                    msg="🤖 <b>VPS 远程监控</b>\n"
-                    msg+="-----------------------------\n"
-                    msg+="📊 /status - 系统状态\n"
-                    msg+="🌐 /ip - 公网 IP\n"
-                    msg+="⏱ /uptime - 运行时间\n"
-                    msg+="📈 /traffic - 流量统计 (需 vnstat)\n"
+                    msg="🤖 <b>VPS 远程监控</b>"
+                    msg+="-----------------------------"
+                    msg+="📊 /status - 系统状态"
+                    msg+="🌐 /ip - 公网 IP"
+                    msg+="⏱ /uptime - 运行时间"
+                    msg+="📈 /traffic - 流量统计 (需 vnstat)"
                     reply "$chat_id" "$msg"
                     ;;
 
@@ -106,12 +106,12 @@ while true; do
                     mem_total=$(free -m | awk 'NR==2{print $2}')
                     disk=$(df -h / | awk 'NR==2{print $5}')
                     containers=$(docker ps -q 2>/dev/null | wc -l)
-                    msg="📊 <b>系统状态</b>\n"
-                    msg+="-----------------------------\n"
-                    msg+="🧠 负载: <code>$load</code>\n"
-                    msg+="💾 内存: ${mem_used}MB / ${mem_total}MB\n"
-                    msg+="💿 磁盘: $disk 已用\n"
-                    msg+="🐳 容器: 运行 $containers 个\n"
+                    msg="📊 <b>系统状态</b>"
+                    msg+="-----------------------------"
+                    msg+="🧠 负载: <code>$load</code>"
+                    msg+="💾 内存: ${mem_used}MB / ${mem_total}MB"
+                    msg+="💿 磁盘: $disk 已用"
+                    msg+="🐳 容器: 运行 $containers 个"
                     msg+="⏱ 运行: $(uptime -p)"
                     reply "$chat_id" "$msg"
                     ;;
