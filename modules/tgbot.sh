@@ -530,7 +530,7 @@ send_callback_answer() {
 # ============ 负载警报 ============
 check_alert() {
     local now=$(date +%s)
-    if (( now - LAST_ALERT_TIME < 300 )); then return; fi
+    if (( now - LAST_ALERT_TIME < 60 )); then return; fi
 
     local mem_per=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
     local cpu_per=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
