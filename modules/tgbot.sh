@@ -31,7 +31,7 @@ get_stats() {
     local rx=$(cat /proc/net/dev | grep "$dev" | awk '{printf "%.2f GB", $2/1024/1024/1024}')
     local tx=$(cat /proc/net/dev | grep "$dev" | awk '{printf "%.2f GB", $10/1024/1024/1024}')
 
-    echo "📊 *sing-box 系统报告*
+    echo "📊 *系统监控警报*
 --------------------------
 🔹 *服务状态*: $status
 🔹 *CPU 占用*: ${cpu_per}%
