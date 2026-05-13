@@ -21,7 +21,11 @@ BASE_MODULES=(
     "system_optimize.sh"
     "remote_jump.sh"
     "singbox.sh"
-    "singbox_install.sh"
+    "monitor.sh"
+    "ssh_harden.sh"
+    "traffic_monitor.sh"
+    "logs.sh"
+    "tg_monitor.sh"
 )
 
 # 动态提取主控中的 MODULES_LIST
