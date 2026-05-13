@@ -90,6 +90,9 @@ remote_jump_menu() {
                 if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -gt 0 ] && [ "$choice" -le "$max_index" ]; then
                     local u="${users[$choice]}" ip="${ips[$choice]}" p="${ports[$choice]}" k="${keys[$choice]}"
                     [[ "$k" != "none" ]] && ssh -i "$k" -p "$p" "$u@$ip" || ssh -p "$p" "$u@$ip"
+                    echo ""
+                    printf "${YELLOW}已退出远程主机，按回车键返回主菜单...${NC}"
+                    read -r dummy
                     break
                 fi ;;
         esac
