@@ -23,7 +23,6 @@ backup_ssh() {
 }
 
 # ---------- 生成密钥对 ----------
-# ---------- 生成密钥对 ----------
 generate_key() {
     printf "${BLUE}===== 生成 SSH 密钥对 =====${NC}\n"
     printf "密钥类型: 1. RSA (4096)   2. Ed25519 (推荐)\n"
@@ -140,6 +139,22 @@ disable_password_auth() {
     printf "${RED}⚠ 警告：关闭密码登录后，只能通过密钥登录！${NC}\n"
     printf "${RED}   请确保你已经添加了公钥并测试成功，否则会锁死服务器！${NC}\n"
     echo ""
+
+    # 1. 检查是否有授权密钥
+    if [ ! -f ~/.ssh/authorized_keys ] || [ ! -s ~/.ssh/authorized_keys ]; then
+        printf "${RED}✘ 错误：未找到任何授权的公钥！${NC}\n"
+        printf "   请先使用菜单选项 2 添加公钥，或手动创建 ~/.ssh/authorized_keys\n"
+        read -p "按回车键继续..." dummy
+        return
+    fi
+    local key_count=$(grep -c '^ssh-' ~/.ssh/authorized_keys 2>/dev/null || echo 0)
+    if [ "$key_count" -eq 0 ]; then
+        printf "${RED}✘ 错误：authorized_keys 中没有有效的公钥！${NC}\n"
+        read -p "按回车键继续..." dummy
+        return
+    fi
+    printf "${GREEN}检测到 %d 个有效公钥。${NC}\n" "$key_count"
+
     read -p "是否继续？[y/N]: " confirm
     if [[ ! $confirm =~ ^[Yy]$ ]]; then
         return
@@ -147,11 +162,25 @@ disable_password_auth() {
 
     backup_ssh
 
-    # 修改 sshd_config
+    # 2. 确保 PubkeyAuthentication 是开启的（关键）
+    sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' "$SSH_CONF"
+    grep -q '^PubkeyAuthentication' "$SSH_CONF" || echo "PubkeyAuthentication yes" >> "$SSH_CONF"
+
+    # 3. 关闭密码登录
     sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' "$SSH_CONF"
     sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$SSH_CONF"
-    sed -i 's/^#*UsePAM.*/UsePAM no/' "$SSH_CONF"
 
+    # 4. 语法检查
+    printf "${YELLOW}正在检查配置文件语法...${NC}\n"
+    if ! sshd -t 2>/dev/null; then
+        printf "${RED}✘ SSH 配置文件语法错误！已中止操作，并恢复备份。${NC}\n"
+        cp "${SSH_CONF}.bak" "$SSH_CONF"
+        read -p "按回车键继续..." dummy
+        return
+    fi
+    printf "${GREEN}配置语法正确。${NC}\n"
+
+    # 5. 询问重启
     printf "${YELLOW}即将重启 SSH 服务...${NC}\n"
     read -p "继续？[y/N]: " confirm2
     if [[ ! $confirm2 =~ ^[Yy]$ ]]; then
@@ -160,13 +189,25 @@ disable_password_auth() {
         return
     fi
 
-    systemctl restart sshd 2>/dev/null || service sshd restart 2>/dev/null || /etc/init.d/ssh restart 2>/dev/null
+    # 6. 尝试重启，同时兼容 ssh / sshd 两种服务名
+    local restarted=false
+    if systemctl restart ssh 2>/dev/null; then
+        restarted=true
+    elif systemctl restart sshd 2>/dev/null; then
+        restarted=true
+    elif service ssh restart 2>/dev/null; then
+        restarted=true
+    elif service sshd restart 2>/dev/null; then
+        restarted=true
+    elif /etc/init.d/ssh restart 2>/dev/null; then
+        restarted=true
+    fi
 
-    if [ $? -eq 0 ]; then
-        printf "${GREEN}SSH 密码登录已关闭，只允许密钥登录。${NC}\n"
-        printf "${GREEN}SSH 服务已重启。${NC}\n"
+    if $restarted; then
+        printf "${GREEN}✔ SSH 服务已重启，密码登录已关闭。${NC}\n"
+        printf "${GREEN}   请保持当前会话不要断开，新开窗口测试密钥登录！${NC}\n"
     else
-        printf "${RED}SSH 重启失败！配置已写入但未生效，请手动检查。${NC}\n"
+        printf "${RED}✘ SSH 服务重启失败！配置已写入但未生效，请手动检查。${NC}\n"
     fi
     read -p "按回车键继续..." dummy
 }
