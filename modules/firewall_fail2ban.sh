@@ -312,7 +312,6 @@ advanced_defense_menu() {
 
 # ---------- 防端口扫描 ----------
 enable_portscan_protection() {
-    # 确保 fail2ban 运行
     if ! pgrep -x fail2ban-server &>/dev/null; then
         printf "${RED}Fail2Ban 未运行，请先启动。${NC}\n"
         read -p "按回车键继续..." dummy
@@ -320,9 +319,10 @@ enable_portscan_protection() {
     fi
 
     local jail_local="/etc/fail2ban/jail.local"
+    # 备份
     cp "$jail_local" "${jail_local}.bak"
 
-    # recidive
+    # ---------- recidive (已存在则开启，不存在则创建) ----------
     if grep -q '^\[recidive\]' "$jail_local"; then
         sed -i '/^\[recidive\]/,/^\[/ s/^enabled.*/enabled = true/' "$jail_local"
     else
@@ -331,14 +331,14 @@ enable_portscan_protection() {
 [recidive]
 enabled  = true
 logpath  = /var/log/fail2ban.log
-banaction = iptables-allports
+banaction = iptables-multiport[name=recidive]
 bantime  = 1w
 findtime = 1d
 maxretry = 3
 EOF
     fi
 
-    # portscan jail
+    # ---------- portscan jail (使用 iptables-multiport，更通用) ----------
     cat >> "$jail_local" <<'EOF'
 
 [portscan]
@@ -349,22 +349,42 @@ maxretry = 10
 findtime = 60
 bantime  = 86400
 port     = 0:65535
-banaction = iptables-allports
+banaction = iptables-multiport[name=portscan]
 EOF
 
-    # filter
+    # 创建 portscan 过滤器
     cat > /etc/fail2ban/filter.d/portscan.conf <<'EOF'
 [Definition]
 failregex = ^\s*\S+\s+\S+\s+\[<HOST>\]\s+TCP\s+.*\s+SYN
 ignoreregex =
 EOF
 
-    # iptables 日志规则
-    iptables -C INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan detected: " 2>/dev/null || \
-    iptables -I INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan detected: "
+    # 添加 iptables 日志规则（只在 INPUT 链记录 NEW 状态 SYN 包）
+    iptables -C INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan: " 2>/dev/null || \
+    iptables -I INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan: "
 
-    systemctl restart fail2ban 2>/dev/null || service fail2ban restart
-    printf "${GREEN}防端口扫描已启用。${NC}\n"
+    # ---------- 关键：检查配置语法 ----------
+    printf "${YELLOW}验证配置...${NC}\n"
+    if fail2ban-server -t 2>/dev/null; then
+        printf "${GREEN}配置语法正确，正在重载服务...${NC}\n"
+        if fail2ban-client reload 2>/dev/null; then
+            printf "${GREEN}✔ 防端口扫描已启用！${NC}\n"
+        else
+            printf "${RED}✘ 服务重载失败，正在回滚配置。${NC}\n"
+            cp "${jail_local}.bak" "$jail_local"
+            fail2ban-client reload 2>/dev/null || systemctl restart fail2ban 2>/dev/null
+        fi
+    else
+        printf "${RED}✘ 配置文件语法错误，已自动回滚。${NC}\n"
+        cp "${jail_local}.bak" "$jail_local"
+    fi
+
+    # 如果 kern.log 不存在，提示可改用 journald
+    if [ ! -f /var/log/kern.log ]; then
+        printf "${YELLOW}注意：/var/log/kern.log 未找到，portscan jail 可能无法匹配日志。${NC}\n"
+        printf "若使用 journald，可编辑 %s 将 portscan 的 backend 改为 systemd。${NC}\n" "$jail_local"
+    fi
+
     read -p "按回车键继续..." dummy
 }
 
