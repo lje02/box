@@ -1079,7 +1079,7 @@ enable_bbr() {
 while true; do
     clear
     echo -e "==============================================="
-    echo -e "       ${RED}Sing-box 综合管理脚本${PLAIN}"
+    echo -e "          ${RED}Sing-box 综合管理脚本${PLAIN}"
     echo -e "==============================================="
     show_status
     echo -e "-----------------------------------------------"
