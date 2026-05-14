@@ -399,15 +399,15 @@ while true; do
                 /start)
                     send_msg "$FROM_CHAT" "✨ Sing-box 监控管理系统
 ━━━━━━━━━━━━━━━━━━━━━━━━
-欢迎使用！发送 /help 查看所有命令。"
+欢迎使用！发送 /1 查看所有命令。"
                     ;;
-                /help)
+                /1)
                     send_msg "$FROM_CHAT" "📖 *帮助菜单*
 ━━━━━━━━━━━━━━━━━━━━━━━━
 /status     - 查看系统和节点完整报告
 /singbox    - 仅查看 Sing-box 状态并操作
 /system     - 仅查看系统状态
-/myid       - 显示你的用户 ID 信息"
+/id       - 显示你的用户 ID 信息"
                     ;;
                 /status)
                     # 激活菜单按钮
@@ -422,7 +422,7 @@ while true; do
                 /system)
                     send_msg "$FROM_CHAT" "$(get_system_stats)"
                     ;;
-                /myid)
+                /id)
                     local user_info=$(get_user_info "$USER_ID")
                     local username=$(echo "$user_info" | cut -d'|' -f2)
                     local role=$(echo "$user_info" | cut -d'|' -f3)
