@@ -181,5 +181,5 @@ main_menu() {
 }
 
 # ---------- 启动 ----------
-install_self "$1"
+install_self "$@"
 main_menu
