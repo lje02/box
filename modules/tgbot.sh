@@ -305,7 +305,13 @@ while true; do
         if [[ ! -z "$MSG_TEXT" ]]; then
             case "$MSG_TEXT" in
                 /start|/help)
-                    send_msg "$FROM_CHAT" "✨ *Sing-box 监控系统*\n━━━━━━━━━━━━━━━━━━━━━━━━\n/status - 完整系统与节点报告\n/singbox - 仅查看节点并管理\n/system - 仅查看系统资源\n/myid - 查看你的管理员 ID\n━━━━━━━━━━━━━━━━━━━━━━━━"
+                    send_msg "$FROM_CHAT" "✨ *Sing-box 监控系统*
+━━━━━━━━━━━━━━━━━━━━━━━━
+/status  - 完整系统与节点报告
+/singbox - 仅查看节点并管理
+/system  - 仅查看系统资源
+/myid    - 查看你的管理员 ID
+━━━━━━━━━━━━━━━━━━━━━━━━"
                     ;;
                 /status)
                     local inline_kb='{"inline_keyboard": [[{"text":"🔄 刷新状态","callback_data":"refresh_status"}]]}'
@@ -319,10 +325,15 @@ while true; do
                     send_msg "$FROM_CHAT" "$(get_system_stats)"
                     ;;
                 /myid)
-                    send_msg "$FROM_CHAT" "👑 *管理员信息*\n━━━━━━━━━━━━━━━━━━━━━━━━\n🔹 ID: $USER_ID\n🔹 权限: 最高管理员"
+                    # 使用反引号包裹 ID 方便点击复制
+                    send_msg "$FROM_CHAT" "👑 *管理员信息*
+━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 ID: \`$USER_ID\`
+🔹 权限: 最高管理员"
                     ;;
             esac
         fi
+
 
         if [[ ! -z "$CALLBACK_DATA" ]]; then
             case "$CALLBACK_DATA" in
