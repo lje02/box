@@ -3,7 +3,7 @@
 
 ORIG_ARGS=("$@")
 
-COMMON_PATH="/usr/local/share/vp_modules/common.sh"
+COMMON_PATH="/usr/local/share/vn_modules/common.sh"
 if [ -z "$VPS_COMMON_LOADED" ]; then
     if [ -f "$COMMON_PATH" ]; then
         source "$COMMON_PATH"
@@ -17,7 +17,7 @@ check_root
 detect_os
 check_dependencies
 
-MODULE_DIR="/usr/local/share/vp_modules"
+MODULE_DIR="/usr/local/share/vn_modules"
 # 补充主控自身的真实下载地址变量
 GITHUB_RAW_URL="https://raw.githubusercontent.com/lje02/vp/main/vp"
 
@@ -124,7 +124,7 @@ uninstall_script() {
     read -p "确定要卸载此管理面板吗？此操作不可恢复！[y/N] " confirm
     [[ ! $confirm =~ ^[Yy]$ ]] && return
     local script_path=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
-    rm -f "$script_path" /usr/local/bin/vp 2>/dev/null
+    rm -f "$script_path" /usr/local/bin/vn 2>/dev/null
     rm -rf "$MODULE_DIR"
     printf "${GREEN}卸载完成。${NC}\n"
     exit 0
