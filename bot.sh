@@ -87,37 +87,43 @@ LAST_ALERT_TIME=0
 
 # --- 监控函数 (定义在函数内，可以使用 local) ---
 get_singbox_detailed_status() {
-    local api_conn=$(curl -s http://127.0.0.1:$API_PORT/connections | jq '.connections | length' 2>/dev/null)
-    [[ -z "$api_conn" || "$api_conn" == "null" ]] && api_conn=$(ss -tnp 2>/dev/null | grep sing-box | grep -c ESTABLISHED)
+    # 确保变量已定义
+    [[ -z "$API_PORT" ]] && API_PORT=21578
 
-    local ports=$(ss -tlnp 2>/dev/null | grep sing-box | awk '{print $4}' | awk -F':' '{print $NF}' | sort -un | tr '\n' ' ' )
-    [[ -z "$ports" ]] && ports="无"
+    # 1. 获取连接数 (尝试从 API 获取)
+    # 使用 --max-time 防止 API 挂起导致机器人卡死
+    local api_conn=$(curl -s --max-time 2 [http://127.0.0.1](http://127.0.0.1):$API_PORT/connections 2>/dev/null)
+    
+    # 2. 解析 JSON 获取连接长度
+    local conn_count=$(echo "$api_conn" | jq '.connections | length' 2>/dev/null)
+    
+    # 3. 回退方案：如果 API 没开或者报错，直接统计系统 Socket
+    if [[ -z "$conn_count" || "$conn_count" == "null" ]]; then
+        # 统计 sing-box 进程建立的 ESTABLISHED 连接
+        conn_count=$(ss -tnp 2>/dev/null | grep -c "sing-box")
+        local method="系统统计"
+    else
+        local method="API 实时"
+    fi
 
+    # 4. 获取内存和 CPU
     local pid=$(pgrep -f sing-box | head -n 1)
-    local status="❌ 已停止"
-    local runtime="N/A"
-    local cpu="0"
     local mem="0 MB"
-
+    local cpu="0%"
     if [[ ! -z "$pid" ]]; then
-        status="✅ 运行中"
-        runtime=$(ps -o etimes= -p "$pid" | awk '{printf "%02d:%02d:%02d", $1/3600, ($1%3600)/60, $1%60}')
-        cpu=$(ps -p "$pid" -o %cpu= | xargs)
         mem=$(ps -p "$pid" -o rss= | awk '{printf "%.2f MB", $1/1024}')
+        cpu=$(ps -p "$pid" -o %cpu= | xargs)%
     fi
 
     cat << EOF
-🔷 *Sing-box 服务监控*
+🔷 *Sing-box 运行状态*
 ━━━━━━━━━━━━━━━━━━━━━━━━
-🟢 *服务状态*: $status
-🔹 *进程 ID*: ${pid:-N/A}
-🔹 *运行时长*: $runtime
-🔹 *CPU 占用*: ${cpu}%
+🟢 *服务状态*: ✅ 运行中
+🔹 *活跃连接*: $conn_count ($method)
 🔹 *内存占用*: $mem
-🔹 *监听端口*: $ports
-🔹 *活跃连接*: $api_conn
+🔹 *CPU 消耗*: $cpu
 ━━━━━━━━━━━━━━━━━━━━━━━━
-🕒 $(date '+%Y-%m-%d %H:%M:%S')
+🕒 $(date '+%H:%M:%S')
 EOF
 }
 
