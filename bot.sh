@@ -57,16 +57,7 @@ get_singbox_cpu() {
 
 update_bot() {
     echo -e "${YELLOW}正在从远程获取最新版本...${PLAIN}"
-    # 这里模拟更新，如果是通过脚本链接更新：
-    # curl -sL "$UPDATE_URL" -o "${BOT_SCRIPT}.tmp"
-    # if [[ $? -eq 0 ]]; then
-    #     mv "${BOT_SCRIPT}.tmp" "$BOT_SCRIPT"
-    #     chmod +x "$BOT_SCRIPT"
-    #     systemctl restart tg-bot
-    #     echo -e "${GREEN}✔ 更新成功！机器人已重启。${PLAIN}"
-    # else
-    #     echo -e "${RED}✘ 更新失败，请检查网络。${PLAIN}"
-    # fi
+    # 
     echo -e "${CYAN}提示：只需将本地脚本替换为新代码，执行 'systemctl restart tg-bot' 即可热重载。${PLAIN}"
 }
 
@@ -347,16 +338,16 @@ while true; do
                 /start)
                     send_msg "$FROM_CHAT" "✨ Sing-box 监控管理系统
 ━━━━━━━━━━━━━━━━━━━━━━━━
-欢迎使用！发送 /help 查看所有命令。
+欢迎使用！发送 /00 查看所有命令。
 ━━━━━━━━━━━━━━━━━━━━━━━━"
                     ;;
-                /help)
+                /00)
                     send_msg "$FROM_CHAT" "📖 *帮助菜单*
 ━━━━━━━━━━━━━━━━━━━━━━━━
 /status     - 查看完整报告
 /singbox    - Sing-box 状态
 /system     - 系统状态
-/myid       - 显示你的 ID
+/id       - 显示你的 ID
 /start      - 主菜单
 ━━━━━━━━━━━━━━━━━━━━━━━━"
                     ;;
@@ -369,7 +360,7 @@ while true; do
                 /system)
                     send_msg "$FROM_CHAT" "$(get_system_stats)"
                     ;;
-                /myid)
+                /id)
                     local user_info=$(get_user_info "$USER_ID")
                     local username=$(echo "$user_info" | cut -d'|' -f2)
                     local role=$(echo "$user_info" | cut -d'|' -f3)
