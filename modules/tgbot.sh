@@ -304,32 +304,41 @@ while true; do
 
         if [[ ! -z "$MSG_TEXT" ]]; then
             case "$MSG_TEXT" in
-                /start|/help)
-                    send_msg "$FROM_CHAT" "✨ *Sing-box 监控系统*
+                /start)
+                    send_msg "$FROM_CHAT" "✨ Sing-box 监控管理系统
 ━━━━━━━━━━━━━━━━━━━━━━━━
-/status  - 完整系统与节点报告
-/singbox - 仅查看节点并管理
-/system  - 仅查看系统资源
-/myid    - 查看你的管理员 ID
+欢迎使用！发送 /help 查看所有命令。
+━━━━━━━━━━━━━━━━━━━━━━━━"
+                    ;;
+                /help)
+                    send_msg "$FROM_CHAT" "📖 *帮助菜单*
+━━━━━━━━━━━━━━━━━━━━━━━━
+/status     - 查看完整报告
+/singbox    - Sing-box 状态
+/system     - 系统状态
+/myid       - 显示你的 ID
+/start      - 主菜单
 ━━━━━━━━━━━━━━━━━━━━━━━━"
                     ;;
                 /status)
-                    local inline_kb='{"inline_keyboard": [[{"text":"🔄 刷新状态","callback_data":"refresh_status"}]]}'
-                    send_inline_keyboard "$FROM_CHAT" "$(get_full_report)" "$inline_kb"
+                    send_msg "$FROM_CHAT" "$(get_full_report)"
                     ;;
                 /singbox)
-                    local inline_kb='{"inline_keyboard": [[{"text":"🔄 重启服务","callback_data":"restart_singbox"},{"text":"🛑 停止服务","callback_data":"stop_singbox"}],[{"text":"▶️ 启动服务","callback_data":"start_singbox"}]]}'
-                    send_inline_keyboard "$FROM_CHAT" "$(get_singbox_detailed_status)" "$inline_kb"
+                    send_msg "$FROM_CHAT" "$(get_singbox_detailed_status)"
                     ;;
                 /system)
                     send_msg "$FROM_CHAT" "$(get_system_stats)"
                     ;;
                 /myid)
-                    # 使用反引号包裹 ID 方便点击复制
-                    send_msg "$FROM_CHAT" "👑 *管理员信息*
+                    local user_info=$(get_user_info "$USER_ID")
+                    local username=$(echo "$user_info" | cut -d'|' -f2)
+                    local role=$(echo "$user_info" | cut -d'|' -f3)
+                    send_msg "$FROM_CHAT" "👤 *你的信息*
 ━━━━━━━━━━━━━━━━━━━━━━━━
-🔹 ID: \`$USER_ID\`
-🔹 权限: 最高管理员"
+🔹 用户 ID: $USER_ID
+🔹 用户名: $username
+🔹 权限: $role
+━━━━━━━━━━━━━━━━━━━━━━━━"
                     ;;
             esac
         fi
