@@ -31,22 +31,6 @@ MODULES_LIST=(
 )
 
 # ----------------- 自安装（安装后自动更新） -----------------
-install_self() {
-    local install_path="/usr/local/bin/vp"
-    if [[ "$1" == "--install" ]]; then
-        ln -sf "$(realpath "$0")" "$install_path"
-        chmod +x "$install_path"
-        printf "${GREEN}✔ 主控安装成功！${NC}\n"
-        # 自动执行一次全量更新，拉取所有模块
-        printf "${BLUE}▶ 同步所有模块...${NC}\n"
-        update_all --silent
-        printf "${GREEN}✔ 所有模块已同步。${NC}\n"
-        printf "${GREEN}现在输入 'vp' 即可启动管理面板。${NC}\n"
-        exit 0
-    fi
-}
-
-# ----------------- 全量更新（主控 + 模块+公共库） -----------------
 update_all() {
     local silent_mode=false
     [ "$1" = "--silent" ] && silent_mode=true
@@ -56,17 +40,26 @@ update_all() {
     local spin='-\|/'
     local idx=0
 
+    # 1. 确保模块存储目录存在，防止 mv 报错
+    [ -n "$MODULE_DIR" ] && mkdir -p "$MODULE_DIR" 2>/dev/null
+
     # ---- 模块更新 ----
     $silent_mode || printf "同步模块中 "
     for mod in "${MODULES_LIST[@]}"; do
         local tmp="/tmp/${mod}.new"
-        if curl -sSL "$base_url/$mod" -o "$tmp" 2>/dev/null; then
-            if [ -f "$MODULE_DIR/$mod" ] && diff "$MODULE_DIR/$mod" "$tmp" &>/dev/null; then
-                :   # 无变化
+        # 2. 增加 -f 参数，网络报错（如 404）时返回失败状态码，避免下载错误页面
+        if curl -fsSL "$base_url/$mod" -o "$tmp" 2>/dev/null; then
+            # 3. 校验下载的文件非空
+            if [ -s "$tmp" ]; then
+                if [ -f "$MODULE_DIR/$mod" ] && diff "$MODULE_DIR/$mod" "$tmp" &>/dev/null; then
+                    rm -f "$tmp" # 无变化，及时清理临时文件
+                else
+                    mv "$tmp" "$MODULE_DIR/$mod"
+                    chmod +x "$MODULE_DIR/$mod"
+                    ((updated++))
+                fi
             else
-                mv "$tmp" "$MODULE_DIR/$mod"
-                chmod +x "$MODULE_DIR/$mod"
-                ((updated++))
+                rm -f "$tmp" # 空文件清理
             fi
         fi
         $silent_mode || printf "\b${spin:$((idx%4)):1}"
@@ -77,33 +70,52 @@ update_all() {
     # ---- 公共库更新 ----
     local tmp_common="/tmp/common.sh.new"
     local common_url="https://raw.githubusercontent.com/lje02/vp/main/common.sh"
-    if curl -sSL "$common_url" -o "$tmp_common" 2>/dev/null; then
-        if [ -f "$MODULE_DIR/common.sh" ] && diff "$MODULE_DIR/common.sh" "$tmp_common" &>/dev/null; then
-            :
+    if curl -fsSL "$common_url" -o "$tmp_common" 2>/dev/null; then
+        if [ -s "$tmp_common" ]; then
+            if [ -f "$MODULE_DIR/common.sh" ] && diff "$MODULE_DIR/common.sh" "$tmp_common" &>/dev/null; then
+                rm -f "$tmp_common"
+            else
+                mv "$tmp_common" "$MODULE_DIR/common.sh"
+                ((updated++))
+            fi
         else
-            mv "$tmp_common" "$MODULE_DIR/common.sh"
-            ((updated++))
+            rm -f "$tmp_common"
         fi
     fi
 
-    [ $updated -gt 0 ] && printf "${GREEN}共更新 %d 个文件。${NC}\n" $updated || $silent_mode || printf "${GREEN}所有模块均为最新。${NC}\n"
+    # 4. 优化条件语句，原有的 && || 链式写法容易导致意外短路
+    if [ "$updated" -gt 0 ]; then
+        printf "${GREEN}共更新 %d 个文件。${NC}\n" "$updated"
+    elif ! $silent_mode; then
+        printf "${GREEN}所有模块均为最新。${NC}\n"
+    fi
 
     # ---- 主控更新 ----
     $silent_mode || printf "${BLUE}检查主控更新...${NC}\n"
     local tmpfile="/tmp/vp_latest.sh"
-    if curl -sL "$GITHUB_RAW_URL" -o "$tmpfile"; then
-        local real_script=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
-        if ! diff "$real_script" "$tmpfile" &>/dev/null; then
-            chmod +x "$tmpfile"
-            mv "$tmpfile" "$real_script"
-            printf "${GREEN}主控已更新，重新加载...${NC}\n"
-            exec "$real_script" "$@"
+    if curl -fsSL "$GITHUB_RAW_URL" -o "$tmpfile" 2>/dev/null; then
+        if [ -s "$tmpfile" ]; then
+            local real_script
+            real_script=$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")
+            if ! diff "$real_script" "$tmpfile" &>/dev/null; then
+                chmod +x "$tmpfile"
+                mv -f "$tmpfile" "$real_script"
+                $silent_mode || printf "${GREEN}主控已更新，重新加载...${NC}\n"
+                
+                # 5. 注意：这里的 $@ 是 update_all 函数的参数。
+                # 如果你需要重新执行原脚本的参数，应在脚本顶层保存 orig_args=("$@") 并在这里传入
+                exec "$real_script" "$@"
+            else
+                $silent_mode || printf "${GREEN}主控已是最新。${NC}\n"
+                rm -f "$tmpfile"
+            fi
         else
-            printf "${GREEN}主控已是最新。${NC}\n"
+            $silent_mode || printf "${RED}主控下载异常 (文件为空)。${NC}\n"
             rm -f "$tmpfile"
         fi
     else
         $silent_mode || printf "${RED}主控更新下载失败。${NC}\n"
+        rm -f "$tmpfile"
     fi
 }
 
