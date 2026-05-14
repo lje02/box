@@ -338,16 +338,16 @@ while true; do
                 /start)
                     send_msg "$FROM_CHAT" "✨ Sing-box 监控管理系统
 ━━━━━━━━━━━━━━━━━━━━━━━━
-欢迎使用！发送 /00 查看所有命令。
+欢迎使用！发送 /help 查看所有命令。
 ━━━━━━━━━━━━━━━━━━━━━━━━"
                     ;;
-                /00)
+                /help)
                     send_msg "$FROM_CHAT" "📖 *帮助菜单*
 ━━━━━━━━━━━━━━━━━━━━━━━━
 /status     - 查看完整报告
 /singbox    - Sing-box 状态
 /system     - 系统状态
-/id       - 显示你的 ID
+/myid       - 显示你的 ID
 /start      - 主菜单
 ━━━━━━━━━━━━━━━━━━━━━━━━"
                     ;;
@@ -360,7 +360,7 @@ while true; do
                 /system)
                     send_msg "$FROM_CHAT" "$(get_system_stats)"
                     ;;
-                /id)
+                /myid)
                     local user_info=$(get_user_info "$USER_ID")
                     local username=$(echo "$user_info" | cut -d'|' -f2)
                     local role=$(echo "$user_info" | cut -d'|' -f3)
