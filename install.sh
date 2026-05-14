@@ -4,18 +4,17 @@
 REPO_URL="https://raw.githubusercontent.com/lje02/vp/main"
 INSTALL_DIR="/usr/local/bin"
 MODULES_DIR="/usr/local/share/vp_modules"
-ORIG_ARGS=("$@")
 set -e
 
 mkdir -p "$MODULES_DIR"
 
 # 下载公共库和主控
 echo "下载公共库和主控..."
-curl -sSL "$REPO_URL/common.sh" -o "$MODULES_DIR/common.sh" || { echo "公共库下载失败"; exit 1; }
-curl -sSL "$REPO_URL/vp" -o "$INSTALL_DIR/vp" || { echo "主控下载失败"; exit 1; }
+curl -fsSL "$REPO_URL/common.sh" -o "$MODULES_DIR/common.sh" || { echo "公共库下载失败"; exit 1; }
+curl -fsSL "$REPO_URL/vp" -o "$INSTALL_DIR/vp" || { echo "主控下载失败"; exit 1; }
 chmod +x "$INSTALL_DIR/vp"
 
-# 静态后备模块列表
+# 静态后备模块列表 (修复了名称，与主控保持一致 tgbot.sh)
 BASE_MODULES=(
     "firewall_fail2ban.sh"
     "system_optimize.sh"
@@ -25,7 +24,7 @@ BASE_MODULES=(
     "ssh_harden.sh"
     "traffic_monitor.sh"
     "logs.sh"
-    "tg_monitor.sh"
+    "tgbot.sh"
 )
 
 # 动态提取主控中的 MODULES_LIST
@@ -42,11 +41,13 @@ fi
 
 echo -n "下载模块中"
 for mod in "${modules[@]}"; do
-    if curl -sSL "$REPO_URL/modules/$mod" -o "$MODULES_DIR/$mod" 2>/dev/null; then
+    # 增加 -f 参数并在下载后校验文件是否为空
+    if curl -fsSL "$REPO_URL/modules/$mod" -o "$MODULES_DIR/$mod" 2>/dev/null && [ -s "$MODULES_DIR/$mod" ]; then
         chmod +x "$MODULES_DIR/$mod" 2>/dev/null
         echo -n "."
     else
         echo -n "!"
+        rm -f "$MODULES_DIR/$mod" # 清理下载失败或为空的文件
     fi
 done
 echo " 完成"
