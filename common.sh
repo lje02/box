@@ -12,11 +12,11 @@ PLAIN='\033[0m'
 NC='\033[0m'
 
 # 资源路径
-GITHUB_RAW_URL="https://raw.githubusercontent.com/lje02/vp/main/common.sh"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/lje02/vp/main/vn"
 
 # 临时文件清理
 cleanup() {
-    rm -f /tmp/vp_latest.sh
+    rm -f /tmp/vn_latest.sh
 }
 trap cleanup EXIT
 
