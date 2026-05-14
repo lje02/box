@@ -79,11 +79,13 @@ EOF
     # ============================================
     cat > "$BOT_SCRIPT" <<'WORKER_EOF'
 #!/bin/bash
+# 导入配置
 source /etc/sing-box/tg_bot.conf
+
 OFFSET_FILE="/etc/sing-box/tg_bot_offset"
 LAST_ALERT_TIME=0
 
-# --- 监控逻辑 ---
+# --- 监控函数 (定义在函数内，可以使用 local) ---
 get_singbox_detailed_status() {
     local api_conn=$(curl -s http://127.0.0.1:$API_PORT/connections | jq '.connections | length' 2>/dev/null)
     [[ -z "$api_conn" || "$api_conn" == "null" ]] && api_conn=$(ss -tnp 2>/dev/null | grep sing-box | grep -c ESTABLISHED)
@@ -147,20 +149,28 @@ get_system_stats() {
 EOF
 }
 
-get_full_report() { echo -e "$(get_singbox_detailed_status)\n\n$(get_system_stats)"; }
+get_full_report() {
+    echo -e "$(get_singbox_detailed_status)\n\n$(get_system_stats)"
+}
 
-# --- 通讯逻辑 ---
 send_msg() {
-    curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$1" -d "parse_mode=Markdown" -d "text=$2" > /dev/null
+    curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+        -d "chat_id=$1" \
+        -d "parse_mode=Markdown" \
+        -d "text=$2" > /dev/null
 }
 
 send_inline_keyboard() {
-    curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d "chat_id=$1" -d "parse_mode=Markdown" -d "text=$2" -d "reply_markup=$3" > /dev/null
+    curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+        -d "chat_id=$1" \
+        -d "parse_mode=Markdown" \
+        -d "text=$2" \
+        -d "reply_markup=$3" > /dev/null
 }
 
-# --- 消息循环 ---
+# --- 主循环 (严禁使用 local) ---
 while true; do
-    # 警报逻辑 (每2分钟检查一次)
+    # 警报检查
     now=$(date +%s)
     if (( now - LAST_ALERT_TIME > 120 )); then
         if ! systemctl is-active --quiet sing-box; then
@@ -169,7 +179,10 @@ while true; do
         fi
     fi
 
-    UPDATES=$(curl -s "https://api.telegram.org/bot$TOKEN/getUpdates?offset=$(cat $OFFSET_FILE 2>/dev/null || echo 0)&timeout=30")
+    # 获取消息
+    CURRENT_OFFSET=$(cat $OFFSET_FILE 2>/dev/null || echo 0)
+    UPDATES=$(curl -s "https://api.telegram.org/bot$TOKEN/getUpdates?offset=$CURRENT_OFFSET&timeout=30")
+    
     echo "$UPDATES" | jq -c '.result[]' 2>/dev/null | while read -r update; do
         UPDATE_ID=$(echo "$update" | jq -r '.update_id')
         MSG_TEXT=$(echo "$update" | jq -r '.message.text // empty')
@@ -179,41 +192,69 @@ while true; do
         CHAT_ID=$(echo "$update" | jq -r '.message.chat.id // .callback_query.message.chat.id')
 
         # 权限校验
-        [[ "$USER_ID" != "$ADMIN_ID" ]] && { echo $((UPDATE_ID + 1)) > $OFFSET_FILE; continue; }
+        if [[ "$USER_ID" != "$ADMIN_ID" ]]; then
+            echo $((UPDATE_ID + 1)) > $OFFSET_FILE
+            continue
+        fi
 
-        # 处理文本指令
+        # 处理文本指令 (已移除 local)
         if [[ ! -z "$MSG_TEXT" ]]; then
             case "$MSG_TEXT" in
-                /start|/help) send_msg "$CHAT_ID" "📖 *帮助菜单*\n/status - 完整报告\n/singbox - 节点管理\n/system - 系统状态\n/myid - 你的ID" ;;
-                /status) 
-                    kb='{"inline_keyboard": [[{"text":"🔄 刷新状态","callback_data":"refresh_status"}]]}'
-                    send_inline_keyboard "$CHAT_ID" "$(get_full_report)" "$kb" ;;
-                /singbox) 
-                    kb='{"inline_keyboard": [[{"text":"🔄 重启","callback_data":"restart_sb"},{"text":"🛑 停止","callback_data":"stop_sb"}],[{"text":"▶️ 启动","callback_data":"start_sb"}]]}'
-                    send_inline_keyboard "$CHAT_ID" "$(get_singbox_detailed_status)" "$kb" ;;
-                /system) send_msg "$CHAT_ID" "$(get_system_stats)" ;;
-                /myid) send_msg "$CHAT_ID" "👤 *你的 ID*: \`$USER_ID\`\n🔹 权限: 最高管理员" ;;
+                /start|/help)
+                    send_msg "$CHAT_ID" "📖 *帮助菜单*
+━━━━━━━━━━━━━━━━━━━━━━━━
+/status  - 完整监控报告
+/singbox - 节点服务管理
+/system  - 仅看系统状态
+/myid    - 查看你的 ID
+━━━━━━━━━━━━━━━━━━━━━━━━"
+                    ;;
+                /status)
+                    KB='{"inline_keyboard": [[{"text":"🔄 刷新状态","callback_data":"refresh_status"}]]}'
+                    send_inline_keyboard "$CHAT_ID" "$(get_full_report)" "$KB"
+                    ;;
+                /singbox)
+                    KB='{"inline_keyboard": [[{"text":"🔄 重启","callback_data":"restart_sb"},{"text":"🛑 停止","callback_data":"stop_sb"}],[{"text":"▶️ 启动","callback_data":"start_sb"}]]}'
+                    send_inline_keyboard "$CHAT_ID" "$(get_singbox_detailed_status)" "$KB"
+                    ;;
+                /system)
+                    send_msg "$CHAT_ID" "$(get_system_stats)"
+                    ;;
+                /myid)
+                    # 彻底修复此处报错：移除 get_user_info 调用，移除 local
+                    MY_ID_MSG="👤 *你的个人信息*
+━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 用户 ID: \`$USER_ID\`
+🔹 权限等级: 管理员
+━━━━━━━━━━━━━━━━━━━━━━━━"
+                    send_msg "$CHAT_ID" "$MY_ID_MSG"
+                    ;;
             esac
         fi
 
-        # 处理按钮回调
+        # 处理按钮回调 (已移除 local)
         if [[ ! -z "$CB_DATA" ]]; then
+            CALLBACK_MSG=""
             case "$CB_DATA" in
-                restart_sb) systemctl restart sing-box; msg="已重启 Sing-box" ;;
-                stop_sb) systemctl stop sing-box; msg="已停止 Sing-box" ;;
-                start_sb) systemctl start sing-box; msg="已启动 Sing-box" ;;
-                refresh_status) msg="状态已更新" ;;
+                restart_sb) systemctl restart sing-box; CALLBACK_MSG="✅ 服务已重启" ;;
+                stop_sb) systemctl stop sing-box; CALLBACK_MSG="🛑 服务已停止" ;;
+                start_sb) systemctl start sing-box; CALLBACK_MSG="▶️ 服务已启动" ;;
+                refresh_status) CALLBACK_MSG="🔄 状态已刷新" ;;
             esac
-            # 按钮按下后的反馈和页面刷新
-            curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID&text=$(echo $msg | jq -sRr @uri)"
-            kb='{"inline_keyboard": [[{"text":"🔄 重启","callback_data":"restart_sb"},{"text":"🛑 停止","callback_data":"stop_sb"}],[{"text":"▶️ 启动","callback_data":"start_sb"}]]}'
-            send_inline_keyboard "$CHAT_ID" "$(get_full_report)" "$kb"
+            
+            # 反馈点击效果
+            curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID&text=$(echo $CALLBACK_MSG | jq -sRr @uri)"
+            
+            # 刷新消息内容
+            NEW_KB='{"inline_keyboard": [[{"text":"🔄 重启","callback_data":"restart_sb"},{"text":"🛑 停止","callback_data":"stop_sb"}],[{"text":"▶️ 启动","callback_data":"start_sb"}]]}'
+            send_inline_keyboard "$CHAT_ID" "$(get_full_report)" "$NEW_KB"
         fi
 
         echo $((UPDATE_ID + 1)) > $OFFSET_FILE
     done
     sleep 1
 done
+
 WORKER_EOF
 
     chmod +x "$BOT_SCRIPT"
