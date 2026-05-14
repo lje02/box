@@ -198,7 +198,7 @@ while true; do
 🔹 用户 ID: \`$USER_ID\`
 🔹 权限: 管理员
 ━━━━━━━━━━━━━━━━━━━━━━━━"
-                send_msg "$FROM_CHAT" "$msg_id_text"
+                send_msg "$CHAT" "$msg_id_text"
                 ;;
 
             esac
