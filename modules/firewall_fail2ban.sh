@@ -2,7 +2,7 @@
 # 防火墙与 Fail2Ban 模块
 
 if [ -z "$VPS_COMMON_LOADED" ]; then
-    source /usr/local/share/vp_modules/common.sh 2>/dev/null || {
+    source /usr/local/share/vn_modules/common.sh 2>/dev/null || {
         echo "无法加载公共函数库"
         exit 1
     }
