@@ -1,6 +1,9 @@
 #!/bin/bash
 # VPS 管理面板主控 (vp)
 
+# 保存初始参数，以便更新后无缝重启重载参数
+ORIG_ARGS=("$@")
+
 COMMON_PATH="/usr/local/share/vp_modules/common.sh"
 if [ -z "$VPS_COMMON_LOADED" ]; then
     if [ -f "$COMMON_PATH" ]; then
@@ -16,6 +19,8 @@ detect_os
 check_dependencies
 
 MODULE_DIR="/usr/local/share/vp_modules"
+# 补充主控自身的真实下载地址变量
+GITHUB_RAW_URL="https://raw.githubusercontent.com/lje02/vp/main/vp"
 
 # 所有模块列表（新增模块只需在此数组中添加名称）
 MODULES_LIST=(
@@ -47,19 +52,17 @@ update_all() {
     $silent_mode || printf "同步模块中 "
     for mod in "${MODULES_LIST[@]}"; do
         local tmp="/tmp/${mod}.new"
-        # 2. 增加 -f 参数，网络报错（如 404）时返回失败状态码，避免下载错误页面
         if curl -fsSL "$base_url/$mod" -o "$tmp" 2>/dev/null; then
-            # 3. 校验下载的文件非空
             if [ -s "$tmp" ]; then
                 if [ -f "$MODULE_DIR/$mod" ] && diff "$MODULE_DIR/$mod" "$tmp" &>/dev/null; then
-                    rm -f "$tmp" # 无变化，及时清理临时文件
+                    rm -f "$tmp"
                 else
                     mv "$tmp" "$MODULE_DIR/$mod"
                     chmod +x "$MODULE_DIR/$mod"
                     ((updated++))
                 fi
             else
-                rm -f "$tmp" # 空文件清理
+                rm -f "$tmp"
             fi
         fi
         $silent_mode || printf "\b${spin:$((idx%4)):1}"
@@ -83,7 +86,6 @@ update_all() {
         fi
     fi
 
-    # 4. 优化条件语句，原有的 && || 链式写法容易导致意外短路
     if [ "$updated" -gt 0 ]; then
         printf "${GREEN}共更新 %d 个文件。${NC}\n" "$updated"
     elif ! $silent_mode; then
@@ -102,9 +104,8 @@ update_all() {
                 mv -f "$tmpfile" "$real_script"
                 $silent_mode || printf "${GREEN}主控已更新，重新加载...${NC}\n"
                 
-                # 5. 注意：这里的 $@ 是 update_all 函数的参数。
-                # 如果你需要重新执行原脚本的参数，应在脚本顶层保存 orig_args=("$@") 并在这里传入
-                exec "$real_script" "$@"
+                # 修改点：使用顶部保存的全局参数 ORIG_ARGS 重新拉起主控
+                exec "$real_script" "${ORIG_ARGS[@]}"
             else
                 $silent_mode || printf "${GREEN}主控已是最新。${NC}\n"
                 rm -f "$tmpfile"
@@ -156,7 +157,7 @@ main_menu() {
         echo -e "6. 日志查看/分析"
         echo -e "7. 密钥生成/禁用密码"
         echo -e "8. 远程SSH跳转(输入exit退出)"
-        echo -e "9 Telegram 系统监控"
+        echo -e "9. Telegram 系统监控" # 修复了这里的格式漏点
         echo -e "--------------------------------------------"
         echo -e "u. 更新全部 (主控+模块)   x. 卸载   0. 退出"
         echo -e "--------------------------------------------"
@@ -181,5 +182,5 @@ main_menu() {
 }
 
 # ---------- 启动 ----------
-install_self "$1"
+install_self "${ORIG_ARGS[0]}" # 这里也可以直接传 ${ORIG_ARGS[@]}，具体看你 common.sh 里 install_self 的逻辑
 main_menu
