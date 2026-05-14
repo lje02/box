@@ -53,3 +53,4 @@ echo " 完成"
 
 echo ""
 echo "安装完成！输入 'vp' 即可启动管理面板。"
+exec "$real_script" "${ORIG_ARGS[@]}"
