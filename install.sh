@@ -29,8 +29,8 @@ BASE_MODULES=(
 
 # 动态提取主控中的 MODULES_LIST
 modules=()
-if [ -f "$INSTALL_DIR/vp" ]; then
-    modules=($(awk '/^MODULES_LIST=\(/ {flag=1; next} /^\)/ {flag=0} flag {gsub(/"/, ""); if ($1 ~ /\.sh$/) print $1}' "$INSTALL_DIR/vp"))
+if [ -f "$INSTALL_DIR/vn" ]; then
+    modules=($(awk '/^MODULES_LIST=\(/ {flag=1; next} /^\)/ {flag=0} flag {gsub(/"/, ""); if ($1 ~ /\.sh$/) print $1}' "$INSTALL_DIR/vn"))
 fi
 
 # 提取为空时使用静态列表
