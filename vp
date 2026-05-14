@@ -1,7 +1,6 @@
 #!/bin/bash
 # VPS 管理面板主控 (vp)
 
-# 保存初始参数，以便更新后无缝重启重载参数
 ORIG_ARGS=("$@")
 
 COMMON_PATH="/usr/local/share/vp_modules/common.sh"
@@ -182,5 +181,5 @@ main_menu() {
 }
 
 # ---------- 启动 ----------
-install_self "${ORIG_ARGS[@]}" # 这里也可以直接传 ${ORIG_ARGS[@]}，具体看 common.sh 里 install_self 的逻辑
+install_self "${ORIG_ARGS[0]}" # 这里也可以直接传 ${ORIG_ARGS[@]}，具体看 common.sh 里 install_self 的逻辑
 main_menu
