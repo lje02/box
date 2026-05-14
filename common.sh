@@ -12,7 +12,7 @@ PLAIN='\033[0m'
 NC='\033[0m'
 
 # 资源路径
-GITHUB_RAW_URL="https://raw.githubusercontent.com/lje02/vp/main/vn"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/lje02/vp/main/common.sh"
 
 # 临时文件清理
 cleanup() {
