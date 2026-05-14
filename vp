@@ -1,5 +1,5 @@
 #!/bin/bash
-# VPS 管理面板主控 (vp)
+# VPS 管理面板主控 
 
 ORIG_ARGS=("$@")
 
@@ -19,7 +19,7 @@ check_dependencies
 
 MODULE_DIR="/usr/local/share/vn_modules"
 # 补充主控自身的真实下载地址变量
-GITHUB_RAW_URL="https://raw.githubusercontent.com/lje02/vp/main/vp"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/lje02/vp/main/vn"
 
 # 所有模块列表（新增模块只需在此数组中添加名称）
 MODULES_LIST=(
@@ -93,7 +93,7 @@ update_all() {
 
     # ---- 主控更新 ----
     $silent_mode || printf "${BLUE}检查主控更新...${NC}\n"
-    local tmpfile="/tmp/vp_latest.sh"
+    local tmpfile="/tmp/vn_latest.sh"
     if curl -fsSL "$GITHUB_RAW_URL" -o "$tmpfile" 2>/dev/null; then
         if [ -s "$tmpfile" ]; then
             local real_script
