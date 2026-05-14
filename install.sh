@@ -3,7 +3,7 @@
 
 REPO_URL="https://raw.githubusercontent.com/lje02/vp/main"
 INSTALL_DIR="/usr/local/bin"
-MODULES_DIR="/usr/local/share/vp_modules"
+MODULES_DIR="/usr/local/share/vn_modules"
 set -e
 
 mkdir -p "$MODULES_DIR"
@@ -11,10 +11,10 @@ mkdir -p "$MODULES_DIR"
 # 下载公共库和主控
 echo "下载公共库和主控..."
 curl -fsSL "$REPO_URL/common.sh" -o "$MODULES_DIR/common.sh" || { echo "公共库下载失败"; exit 1; }
-curl -fsSL "$REPO_URL/vp" -o "$INSTALL_DIR/vp" || { echo "主控下载失败"; exit 1; }
-chmod +x "$INSTALL_DIR/vp"
+curl -fsSL "$REPO_URL/vn" -o "$INSTALL_DIR/vn" || { echo "主控下载失败"; exit 1; }
+chmod +x "$INSTALL_DIR/vn"
 
-# 静态后备模块列表 (修复了名称，与主控保持一致 tgbot.sh)
+# 静态后备模块列表
 BASE_MODULES=(
     "firewall_fail2ban.sh"
     "system_optimize.sh"
@@ -53,4 +53,4 @@ done
 echo " 完成"
 
 echo ""
-echo "安装完成！输入 'vp' 即可启动管理面板。"
+echo "安装完成！输入 'vn' 即可启动管理面板。"
