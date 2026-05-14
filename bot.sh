@@ -153,6 +153,39 @@ get_full_report() {
     echo -e "$(get_singbox_detailed_status)\n\n$(get_system_stats)"
 }
 
+# --- 自动报警函数 (放在循环外，可以使用 local) ---
+check_system_alerts() {
+    local now=$(date +%s)
+    # 每 120 秒检查一次，避免刷屏
+    [[ $((now - LAST_ALERT_TIME)) -lt 120 ]] && return
+
+    # 1. 检查服务状态
+    if ! systemctl is-active --quiet sing-box; then
+        send_msg "$ADMIN_ID" "🚨 *严重警告*
+━━━━━━━━━━━━━━━━━━━━━━━━
+❌ Sing-box 服务已停止！
+请立即检查服务器状态。
+━━━━━━━━━━━━━━━━━━━━━━━━
+🕒 $(date '+%Y-%m-%d %H:%M:%S')"
+        LAST_ALERT_TIME=$now
+        return
+    fi
+
+    # 2. 检查负载 (CPU/内存 > 90%)
+    local mem_per=$(free | awk '/Mem:/ {printf "%.0f", $3/$2 * 100.0}')
+    local cpu_per=$(top -bn1 | grep "Cpu(s)" | awk '{printf "%.0f", 100 - $8}')
+    
+    if [ "$cpu_per" -gt 90 ] || [ "$mem_per" -gt 90 ]; then
+        send_msg "$ADMIN_ID" "⚠️ *高负载预警*
+━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 CPU 占用: ${cpu_per}%
+🔹 内存占用: ${mem_per}%
+━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 服务器压力过大，可能存在环路或异常连接！"
+        LAST_ALERT_TIME=$now
+    fi
+}
+
 send_msg() {
     curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
         -d "chat_id=$1" \
@@ -168,17 +201,15 @@ send_inline_keyboard() {
         -d "reply_markup=$3" > /dev/null
 }
 
-# --- 主循环 (严禁使用 local) ---
+# --- 主循环 ---
 while true; do
-    # 警报检查
-    now=$(date +%s)
-    if (( now - LAST_ALERT_TIME > 120 )); then
-        if ! systemctl is-active --quiet sing-box; then
-            send_msg "$ADMIN_ID" "🚨 *警告*：Sing-box 服务已停止！"
-            LAST_ALERT_TIME=$now
-        fi
-    fi
+    # 执行报警检查
+    check_system_alerts
 
+    # 获取 Telegram 更新
+    CURRENT_OFFSET=$(cat $OFFSET_FILE 2>/dev/null || echo 0)
+    UPDATES=$(curl -s "https://api.telegram.org/bot$TOKEN/getUpdates?offset=$CURRENT_OFFSET&timeout=30")
+    
     # 获取消息
     CURRENT_OFFSET=$(cat $OFFSET_FILE 2>/dev/null || echo 0)
     UPDATES=$(curl -s "https://api.telegram.org/bot$TOKEN/getUpdates?offset=$CURRENT_OFFSET&timeout=30")
