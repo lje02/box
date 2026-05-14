@@ -4,8 +4,7 @@
 REPO_URL="https://raw.githubusercontent.com/lje02/vp/main"
 INSTALL_DIR="/usr/local/bin"
 MODULES_DIR="/usr/local/share/vp_modules"
-ORIG_ARGS=("$@")"
-
+ORIG_ARGS=("$@")
 set -e
 
 mkdir -p "$MODULES_DIR"
