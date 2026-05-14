@@ -192,7 +192,15 @@ while true; do
                     kb='{"inline_keyboard": [[{"text":"🔄 重启","callback_data":"restart_sb"},{"text":"🛑 停止","callback_data":"stop_sb"}],[{"text":"▶️ 启动","callback_data":"start_sb"}]]}'
                     send_inline_keyboard "$CHAT_ID" "$(get_singbox_detailed_status)" "$kb" ;;
                 /system) send_msg "$CHAT_ID" "$(get_system_stats)" ;;
-                /myid) send_msg "$CHAT_ID" "👤 *你的 ID*: \`$USER_ID\`\n🔹 权限: 最高管理员" ;;
+                /myid)
+                    msg_id_text="👤 *你的信息*
+━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 用户 ID: \`$USER_ID\`
+🔹 权限: 管理员
+━━━━━━━━━━━━━━━━━━━━━━━━"
+                send_msg "$FROM_CHAT" "$msg_id_text"
+                ;;
+
             esac
         fi
 
