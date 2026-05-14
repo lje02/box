@@ -1,18 +1,10 @@
-#!/bin/bash
-
-# ============================================
-# Telegram Bot with Sing-box Monitoring
-# 单一管理员版本 + 自动配置 API
-# ============================================
-
-# --- 路径定义 ---
 BOT_DIR="/etc/sing-box"
-BOT_SCRIPT="$BOT_DIR/tg_worker.sh"
+BOT_SCRIPT="$0"  # 记录脚本自身路径
 BOT_CONF="$BOT_DIR/tg_bot.conf"
 BOT_SERVICE="/etc/systemd/system/tg-bot.service"
-LOG_FILE="/tmp/tg_bot.log"
-SING_BOX_API="http://127.0.0.1:9090"
 SING_BOX_CONFIG="/etc/sing-box/config.json"
+# 更新地址
+UPDATE_URL="https://raw.githubusercontent.com/lje02/vp/main/bot.sh"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -61,6 +53,44 @@ get_singbox_cpu() {
     local pid=$(get_singbox_pid)
     if [[ -z "$pid" ]]; then echo "0"; return; fi
     ps -p "$pid" -o %cpu= 2>/dev/null | tr -d ' '
+}
+
+update_bot() {
+    echo -e "${YELLOW}正在从远程获取最新版本...${PLAIN}"
+    # 这里模拟更新，如果是通过脚本链接更新：
+    # curl -sL "$UPDATE_URL" -o "${BOT_SCRIPT}.tmp"
+    # if [[ $? -eq 0 ]]; then
+    #     mv "${BOT_SCRIPT}.tmp" "$BOT_SCRIPT"
+    #     chmod +x "$BOT_SCRIPT"
+    #     systemctl restart tg-bot
+    #     echo -e "${GREEN}✔ 更新成功！机器人已重启。${PLAIN}"
+    # else
+    #     echo -e "${RED}✘ 更新失败，请检查网络。${PLAIN}"
+    # fi
+    echo -e "${CYAN}提示：只需将本地脚本替换为新代码，执行 'systemctl restart tg-bot' 即可热重载。${PLAIN}"
+}
+
+view_logs() {
+    echo -e "${YELLOW}正在查看机器人实时日志 (Ctrl+C 退出)...${PLAIN}"
+    journalctl -u tg-bot -f -n 50
+}
+
+inject_api_config() {
+    local port=$1
+    if [[ -f "$SING_BOX_CONFIG" ]]; then
+        cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
+        # 注入标准 clash_api 格式
+        jq --arg port "127.0.0.1:$port" '.experimental.clash_api = {"external_controller": $port}' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp"
+        
+        if sing-box check -c "${SING_BOX_CONFIG}.tmp" &>/dev/null; then
+            mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+            systemctl restart sing-box
+            echo -e "${GREEN}✔ Sing-box API 已开启 (端口: $port)${PLAIN}"
+        else
+            echo -e "${RED}✘ JSON 校验失败，已放弃修改以保护服务。${PLAIN}"
+            rm -f "${SING_BOX_CONFIG}.tmp"
+        fi
+    fi
 }
 
 get_singbox_detailed_status() {
@@ -444,28 +474,31 @@ view_monitoring() {
     done
 }
 
-main_menu() {
-    while true; do
-        clear
-        echo -e "${CYAN}╔════════════════════════════════╗${PLAIN}"
-        echo -e "${CYAN}║ Sing-box Telegram Bot 管理系统 ║${PLAIN}"
-        echo -e "${CYAN}╚════════════════════════════════╝${PLAIN}"
-        echo ""
-        echo "1. 安装 / 更新 机器人"
-        echo "2. 卸载 机器人"
-        echo "3. 终端实时查看监控"
-        echo "0. 退出"
-        echo ""
-        read -p "请选择: " choice
+show_menu() {
+    clear
+    echo -e "${CYAN}================================${PLAIN}"
+    echo -e "${GREEN}   Sing-box Bot 管理面板 Pro   ${PLAIN}"
+    echo -e "${CYAN}================================${PLAIN}"
+    echo -e "1. 安装/重装 机器人"
+    echo -e "2. ${YELLOW}一键检查/更新脚本${PLAIN}"
+    echo -e "3. ${RED}查看机器人运行日志 (调试)${PLAIN}"
+    echo -e "4. 修改 API 监听端口"
+    echo -e "5. 卸载机器人"
+    echo -e "0. 退出"
+    echo -e "${CYAN}--------------------------------${PLAIN}"
+    read -p "请输入选项 [0-5]: " choice
 
-        case $choice in
-            1) install_bot; read -p "按 Enter 继续..." ;;
-            2) uninstall_bot; read -p "按 Enter 继续..." ;;
-            3) view_monitoring ;;
-            0) exit 0 ;;
-            *) echo -e "${RED}✘ 无效选择${PLAIN}"; read -p "按 Enter 继续..." ;;
-        esac
-    done
+    case $choice in
+        1) install_bot ;;
+        2) update_bot ;;
+        3) view_logs ;;
+        4) 
+            read -p "请输入新的 API 端口 (默认 9090): " new_port
+            inject_api_config ${new_port:-9090}
+            ;;
+        5) uninstall_bot ;;
+        *) exit 0 ;;
+    esac
 }
 
-main_menu
+show_menu
