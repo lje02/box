@@ -148,7 +148,7 @@ install_bot() {
     fi
 
     read -p "请输入 Bot Token: " TG_TOKEN
-    read -p "请输入管理员 Chat ID (此后仅该 ID 可用): " TG_CHATID
+    read -p "请输入管理员 Chat ID: " TG_CHATID
     
     if [[ -z "$TG_TOKEN" || -z "$TG_CHATID" ]]; then
         echo -e "${RED}✘ 错误: Token 或 Chat ID 不能为空${PLAIN}"
@@ -247,18 +247,31 @@ EOF
 get_full_report() { echo "$(get_singbox_detailed_status)"; echo ""; echo "$(get_system_stats)"; }
 
 send_msg() {
+    local chat_id=$1
+    local text=$2
     curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
-        -d "chat_id=$1" -d "parse_mode=Markdown" -d "text=$2" > /dev/null
+        -d "chat_id=$chat_id" -d "parse_mode=Markdown" -d "text=$text" > /dev/null
 }
 
 send_inline_keyboard() {
+    local chat_id=$1
+    local text=$2
+    local buttons=$3  # JSON 格式的按钮数组
+    
     curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
-        -d "chat_id=$1" -d "parse_mode=Markdown" -d "text=$2" -d "reply_markup=$3" > /dev/null
+        -d "chat_id=$chat_id" \
+        -d "parse_mode=Markdown" \
+        -d "text=$text" \
+        -d "reply_markup=$buttons" > /dev/null
 }
 
 send_callback_answer() {
+    local callback_query_id=$1
+    local text=$2
+    
     curl -s -X POST "https://api.telegram.org/bot$TOKEN/answerCallbackQuery" \
-        -d "callback_query_id=$1" -d "text=$2" > /dev/null
+        -d "callback_query_id=$callback_query_id" \
+        -d "text=$text" > /dev/null
 }
 
 check_alert() {
