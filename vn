@@ -141,6 +141,17 @@ run_module() {
     fi
 }
 
+# ----------------- 自安装 -----------------
+install_self() {
+    local install_path="/usr/local/bin/vn"
+    if [[ "$1" == "--install" ]]; then
+        ln -sf "$(realpath "$0")" "$install_path"
+        chmod +x "$install_path"
+        printf "${GREEN}✔ 安装成功！现在输入 'vn' 即可启动面板。${PLAIN}\n"
+        exit 0
+    fi
+}
+
 # ----------------- 主菜单 -----------------
 main_menu() {
     while true; do
