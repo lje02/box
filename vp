@@ -16,7 +16,6 @@ detect_os
 check_dependencies
 
 MODULE_DIR="/usr/local/share/vp_modules"
-ORIG_ARGS=("$@")
 
 # 所有模块列表（新增模块只需在此数组中添加名称）
 MODULES_LIST=(
@@ -182,5 +181,5 @@ main_menu() {
 }
 
 # ---------- 启动 ----------
-exec "$real_script" "${ORIG_ARGS[@]}"
+install_self "$1"
 main_menu
