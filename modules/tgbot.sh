@@ -64,31 +64,28 @@ get_singbox_cpu() {
 }
 
 get_singbox_detailed_status() {
-    local status=$(get_singbox_status)
-    local pid=$(get_singbox_pid)
-    local ports=$(get_singbox_ports)
-    local connections=$(get_singbox_connections)
-    local memory=$(get_singbox_memory)
-    local cpu=$(get_singbox_cpu)
-    local uptime=""
-    
-    if [[ ! -z "$pid" ]]; then
-        uptime=$(ps -p "$pid" -o etime= 2>/dev/null | xargs)
-    fi
-    
-    cat << EOF
-🔷 *Sing-box 服务监控*
-━━━━━━━━━━━━━━━━━━━━━━━━
-🟢 *服务状态*: $status
-🔹 *进程 ID*: ${pid:-未运行}
-🔹 *运行时长*: ${uptime:-N/A}
-🔹 *CPU 占用*: ${cpu}%
-🔹 *内存占用*: $memory
-🔹 *监听端口*: ${ports:-无}
-🔹 *活跃连接*: $connections
-━━━━━━━━━━━━━━━━━━━━━━━━
-🕒 $(date '+%Y-%m-%d %H:%M:%S')
-EOF
+    # 1. 尝试从 API 获取活跃连接数
+    local api_conn=$(curl -s http://127.0.0.1:9090/connections | jq '.connections | length' 2>/dev/null)
+    # 如果 API 请求失败（比如服务没开），回退到系统命令统计
+    [[ -z "$api_conn" || "$api_conn" == "null" ]] && api_conn=$(ss -tnp 2>/dev/null | grep sing-box | grep -c ESTABLISHED)
+
+    # 2. 获取监听端口 (包含 API 端口和业务端口)
+    local ports=$(ss -tlnp 2>/dev/null | grep sing-box | awk '{print $4}' | awk -F':' '{print $NF}' | sort -u | tr '\n' ' ' )
+    [[ -z "$ports" ]] && ports="无"
+
+    # 3. 获取基础信息
+    local pid=$(pgrep -f sing-box | head -n 1)
+    local runtime="未知"
+    [[ ! -z "$pid" ]] && runtime=$(ps -o etimes= -p "$pid" | awk '{printf "%02d:%02d", $1/60, $1%60}')
+
+    echo "🔷 Sing-box 服务监控"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "🟢 服务状态: ✅ 运行中"
+    echo "🔹 进程 ID: $pid"
+    echo "🔹 运行时长: $runtime"
+    echo "🔹 监听端口: $ports"
+    echo "🔹 活跃连接: $api_conn"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 
 get_system_stats() {
