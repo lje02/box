@@ -181,5 +181,5 @@ main_menu() {
 }
 
 # ---------- 启动 ----------
-install_self "$@"
+exec "$real_script" "${ORIG_ARGS[@]}"
 main_menu
