@@ -182,5 +182,5 @@ main_menu() {
 }
 
 # ---------- 启动 ----------
-install_self "${ORIG_ARGS[0]}" # 这里也可以直接传 ${ORIG_ARGS[@]}，具体看你 common.sh 里 install_self 的逻辑
+install_self "${ORIG_ARGS[@]}" # 这里也可以直接传 ${ORIG_ARGS[@]}，具体看 common.sh 里 install_self 的逻辑
 main_menu
