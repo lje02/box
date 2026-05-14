@@ -140,7 +140,7 @@ install_bot() {
     if [[ -f "$SING_BOX_CONFIG" ]]; then
         echo -e "${YELLOW}正在为 Sing-box 注入 API 配置...${PLAIN}"
         cp "$SING_BOX_CONFIG" "${SING_BOX_CONFIG}.bak"
-        jq '.experimental.api = {"enabled": true, "listen": "127.0.0.1:9090"}' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp" && mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
+        jq '.experimental.clash_api = {"enabled": true, "listen": "127.0.0.1:9090"}' "$SING_BOX_CONFIG" > "${SING_BOX_CONFIG}.tmp" && mv "${SING_BOX_CONFIG}.tmp" "$SING_BOX_CONFIG"
         systemctl restart sing-box
         echo -e "${GREEN}✔ 已开启 Sing-box 内部 API (127.0.0.1:9090) 并重启服务${PLAIN}"
     else
