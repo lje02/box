@@ -260,6 +260,15 @@ while true; do
 ━━━━━━━━━━━━━━━━━━━━━━━━"
                     send_msg "$CHAT_ID" "$MY_ID_MSG"
                     ;;
+                /links)
+                    kb=$(get_links_menu)
+                    send_inline_keyboard "$CHAT_ID" "📂 *节点链接库*
+━━━━━━━━━━━━━━━━━━━━━━━━
+此处的节点来自 \`$LINK_DIR\`
+请选择一个文件查看分享链接：
+━━━━━━━━━━━━━━━━━━━━━━━━" "$kb"
+                    ;;
+
             esac
         fi
 
@@ -271,6 +280,26 @@ while true; do
                 stop_sb) systemctl stop sing-box; CALLBACK_MSG="🛑 服务已停止" ;;
                 start_sb) systemctl start sing-box; CALLBACK_MSG="▶️ 服务已启动" ;;
                 refresh_status) CALLBACK_MSG="🔄 状态已刷新" ;;
+                getlink_*)
+                    target_file=${CB_DATA#getlink_}
+                    file_path="$LINK_DIR/$target_file"
+                    if [[ -f "$file_path" ]]; then
+                        link_content=$(cat "$file_path")
+                        back_kb='{"inline_keyboard": [[{"text":"⬅️ 返回列表","callback_data":"back_to_links"}]]}'
+                        send_msg "$CHAT_ID" "📋 *节点分享链接 ($target_file)*：\n\n\`$link_content\`"
+                        curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID&text=已读取 $target_file"
+                    else
+                        curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID&text=文件已不存在"
+                    fi
+                    ;;
+                back_to_links)
+                    kb=$(get_links_menu)
+                    send_inline_keyboard "$CHAT_ID" "📂 *节点库*：\n请选择要获取的分享链接：" "$kb"
+                    ;;
+
+                    
+                
+
             esac
             
             # 反馈点击效果
@@ -315,8 +344,6 @@ EOF
 # ============================================
 
 LINK_DIR="/etc/sing-box/links"
-
-# 生成分享链接菜单
 get_links_menu() {
     # 检查目录是否存在，不存在则创建
     [[ ! -d "$LINK_DIR" ]] && mkdir -p "$LINK_DIR"
