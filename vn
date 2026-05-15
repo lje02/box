@@ -105,7 +105,6 @@ update_all() {
                 mv -f "$tmpfile" "$real_script"
                 $silent_mode || printf "${GREEN}主控已更新，重新加载...${NC}\n"
                 
-                # 修改点：使用顶部保存的全局参数 ORIG_ARGS 重新拉起主控
                 exec "$real_script" "${ORIG_ARGS[@]}"
             else
                 $silent_mode || printf "${GREEN}主控已是最新。${NC}\n"
@@ -119,6 +118,8 @@ update_all() {
         $silent_mode || printf "${RED}主控更新下载失败。${NC}\n"
         rm -f "$tmpfile"
     fi
+    echo ""
+    read -p "按回车键继续...多更新两次" dummy
 }
 
 # ----------------- 卸载 -----------------
