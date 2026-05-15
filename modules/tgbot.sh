@@ -311,8 +311,32 @@ EOF
 }
 
 # ============================================
-# 其他管理函数
+#          其他管理函数
 # ============================================
+
+LINK_DIR="/etc/sing-box/links"
+
+# 生成分享链接菜单
+get_links_menu() {
+    # 检查目录是否存在，不存在则创建
+    [[ ! -d "$LINK_DIR" ]] && mkdir -p "$LINK_DIR"
+    
+    # 获取目录下所有文件名
+    local files=$(ls "$LINK_DIR" 2>/dev/null)
+    
+    if [[ -z "$files" ]]; then
+        echo '{"inline_keyboard": [[{"text":"📂 文件夹为空","callback_data":"none"}]]}'
+        return
+    fi
+
+    local buttons='{"inline_keyboard": ['
+    while read -r filename; do
+        # 按钮显示文件名，点击触发 "getlink_文件名"
+        buttons+='[{"text":"🔗 '$filename'","callback_data":"getlink_'$filename'"}],'
+    done <<< "$files"
+    buttons="${buttons%,}]}"
+    echo "$buttons"
+}
 
 uninstall_bot() {
     systemctl stop tg-bot && systemctl disable tg-bot
