@@ -9,7 +9,6 @@ BOT_SCRIPT="/etc/sing-box/tg_worker.sh"  # 明确工作脚本路径
 BOT_CONF="$BOT_DIR/tg_bot.conf"
 BOT_SERVICE="/etc/systemd/system/tg-bot.service"
 SING_BOX_CONFIG="/etc/sing-box/config.json"
-LINK_DIR="/etc/sing-box/links"
 UPDATE_URL="https://raw.githubusercontent.com/lje02/vp/main/bot.sh"
 
 # 颜色定义
@@ -43,27 +42,6 @@ inject_api_config() {
             rm -f "${SING_BOX_CONFIG}.tmp"
         fi
     fi
-}
-
-get_links_menu() {
-    # 检查目录是否存在，不存在则创建
-    [[ ! -d "$LINK_DIR" ]] && mkdir -p "$LINK_DIR"
-    
-    # 获取目录下所有文件名
-    local files=$(ls "$LINK_DIR" 2>/dev/null)
-    
-    if [[ -z "$files" ]]; then
-        echo '{"inline_keyboard": [[{"text":"📂 文件夹为空","callback_data":"none"}]]}'
-        return
-    fi
-
-    local buttons='{"inline_keyboard": ['
-    while read -r filename; do
-        # 按钮显示文件名，点击触发 "getlink_文件名"
-        buttons+='[{"text":"🔗 '$filename'","callback_data":"getlink_'$filename'"}],'
-    done <<< "$files"
-    buttons="${buttons%,}]}"
-    echo "$buttons"
 }
 
 # ============================================
@@ -106,6 +84,24 @@ source /etc/sing-box/tg_bot.conf
 
 OFFSET_FILE="/etc/sing-box/tg_bot_offset"
 LAST_ALERT_TIME=0
+
+LINK_DIR="/etc/sing-box/links"
+OFFSET_FILE="/etc/sing-box/tg_bot_offset"
+
+get_links_menu() {
+    [[ ! -d "$LINK_DIR" ]] && mkdir -p "$LINK_DIR"
+    local files=$(ls "$LINK_DIR" 2>/dev/null)
+    if [[ -z "$files" ]]; then
+        echo '{"inline_keyboard": [[{"text":"📂 文件夹为空","callback_data":"none"}]]}'
+        return
+    fi
+    local buttons='{"inline_keyboard": ['
+    while read -r filename; do
+        buttons+='[{"text":"🔗 '$filename'","callback_data":"getlink_'$filename'"}],'
+    done <<< "$files"
+    buttons="${buttons%,}]}"
+    echo "$buttons"
+}
 
 # --- 监控函数 (定义在函数内，可以使用 local) ---
 get_singbox_detailed_status() {
