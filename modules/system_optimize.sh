@@ -149,15 +149,31 @@ install_bbr() {
 
 config_swap() {
     clear
-    printf "${BLUE}当前 Swap 状态：${NC}\n"; swapon --show; echo ""
-    read -p "输入要创建的 Swap 大小 (MB) [例如 1024]，0 取消: " swap_size
+    printf "${BLUE}当前 Swap 状态：${NC}\n"
+    swapon --show
+    echo ""
+    read -p "输入要创建的 Swap 大小 (MB) [例如 1024]，输入 0 取消: " swap_size
     [[ -z "$swap_size" || "$swap_size" -eq 0 ]] && return
     if [[ $swap_size =~ ^[0-9]+$ ]]; then
-        if swapon --show | grep -q "swapfile"; then swapoff /swapfile; rm -f /swapfile; fi
-        dd if=/dev/zero of=/ swapfile bs=1M count=$swap_size status=progress
-        chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
-        grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
-        printf "${GREEN}Swap 创建成功，大小 ${swap_size}MB${NC}\n"
+        # 如果已有 /swapfile，先关闭并删除
+        if swapon --show | grep -q "/swapfile"; then
+            swapoff /swapfile
+            rm -f /swapfile
+        fi
+        # 创建 swap 文件（修复路径错误）
+        printf "${YELLOW}正在创建 swap 文件...${NC}\n"
+        if dd if=/dev/zero of=/swapfile bs=1M count="$swap_size" status=progress 2>/dev/null; then
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+            # 确保 /etc/fstab 中有记录
+            if ! grep -q "/swapfile" /etc/fstab; then
+                echo "/swapfile none swap sw 0 0" >> /etc/fstab
+            fi
+            printf "${GREEN}✔ Swap 创建成功，大小 ${swap_size}MB${NC}\n"
+        else
+            printf "${RED}✘ dd 创建文件失败，请检查磁盘空间。${NC}\n"
+        fi
     else
         printf "${RED}输入的不是有效数字${NC}\n"
     fi
