@@ -32,6 +32,8 @@ MODULES_LIST=(
     "traffic_monitor.sh"
     "logs.sh"
     "tgbot.sh"
+    "backups.sh"
+
 )
 
 # ----------------- 自安装（安装后自动更新） -----------------
@@ -159,30 +161,32 @@ main_menu() {
         echo -e "--------------------------------------------"
         printf "${GREEN}========== VPS 综合管理面板 (vn) ==========${PLAIN}\n"
         echo -e "--------------------------------------------"
-        echo -e "1. 防火墙 / Fail2Ban 管理"
-        echo -e "2. 系统信息与优化 (BBR/Swap)"
-        echo -e "3. sing-box 管理"
-        echo -e "4. 系统实时监控"
-        echo -e "5. 流量统计"
-        echo -e "6. 日志查看/分析"
-        echo -e "7. 密钥生成/禁用密码"
-        echo -e "8. 远程SSH跳转(输入exit退出)"
-        echo -e "9. Telegram 系统监控" # 修复了这里的格式漏点
+        echo -e  "1. 防火墙 / Fail2Ban 管理"
+        echo -e  "2. 系统信息与优化 (BBR/Swap)"
+        echo -e  "3. sing-box 管理"
+        echo -e  "4. 系统实时监控"
+        echo -e  "5. 流量统计"
+        echo -e  "6. 日志查看/分析"
+        echo -e  "7. 密钥生成/禁用密码"
+        echo -e  "8. 远程SSH跳转(输入exit退出)"
+        echo -e  "9. Telegram 系统监控"
+        echo -e "10. 备份/还原
         echo -e "--------------------------------------------"
         echo -e "u. 更新全部 (主控+模块)   x. 卸载   0. 退出"
         echo -e "--------------------------------------------"
         read -p "请输入选项: " main_choice
 
         case "$main_choice" in
-            1) run_module "firewall_fail2ban.sh" ;;
-            2) run_module "system_optimize.sh" ;;
-            3) run_module "singbox.sh" ;;
-            4) run_module "monitor.sh" ;;
-            5) run_module "traffic_monitor.sh" ;;
-            6) run_module "logs.sh" ;;
-            7) run_module "ssh_harden.sh" ;;
-            8) run_module "remote_jump.sh" ;;
-            9) run_module "tgbot.sh" ;;
+             1) run_module "firewall_fail2ban.sh" ;;
+             2) run_module "system_optimize.sh" ;;
+             3) run_module "singbox.sh" ;;
+             4) run_module "monitor.sh" ;;
+             5) run_module "traffic_monitor.sh" ;;
+             6) run_module "logs.sh" ;;
+             7) run_module "ssh_harden.sh" ;;
+             8) run_module "remote_jump.sh" ;;
+             9) run_module "tgbot.sh" ;;
+            10) run_module "backups.sh" ;;
             u) update_all ;;
             x) uninstall_script ;;
             0) exit 0 ;;
