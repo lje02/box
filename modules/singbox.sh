@@ -1066,7 +1066,7 @@ while true; do
     echo -e "  ${GREEN}6.${PLAIN} 备份/还原配置"
     echo -e "  ${GREEN}7.${PLAIN} 开启 BBR 网络加速"
     echo -e "  ${GREEN}8.${PLAIN} 申请 SSL 域名证书 (ACME)"
-    echo -e " ${GREEN}9.${PLAIN} 添加出站/用于/自动优选/轮询"
+    echo -e "  ${GREEN}9.${PLAIN} 添加出站/用于/自动优选/轮询"
     echo -e " ${GREEN}10.${PLAIN} 更改配置/删除"
     echo -e "-----------------------------------------------"
     #底部菜单
