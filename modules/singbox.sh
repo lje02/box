@@ -838,10 +838,10 @@ manage_routing() {
     while true; do
         clear
         echo -e "${YELLOW}================================================${PLAIN}"
-        echo -e "${YELLOW}         路由分流与链式代理管理 (合并版)        ${PLAIN}"
+        echo -e "${YELLOW}         路由分流与链式代理管理         ${PLAIN}"
         echo -e "${YELLOW}================================================${PLAIN}"
         echo -e "${CYAN}--- 常规网站分流 ---${PLAIN}"
-        echo " 1. 添加分流规则多层)"
+        echo " 1. 添加分流规则(多层中转先添加跳转节点)"
         echo " 2. 查看当前分流规则"
         echo " 3. 删除特定分流规则"
         echo -e "\n${CYAN}--- 链式代理与跳板 ---${PLAIN}"
