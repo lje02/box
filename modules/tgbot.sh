@@ -9,7 +9,7 @@ BOT_SCRIPT="/etc/sing-box/tg_worker.sh"  # 明确工作脚本路径
 BOT_CONF="$BOT_DIR/tg_bot.conf"
 BOT_SERVICE="/etc/systemd/system/tg-bot.service"
 SING_BOX_CONFIG="/etc/sing-box/config.json"
-# UPDATE_URL="https://raw.githubusercontent.com/lje02/vp/main/bot.sh"
+UPDATE_URL="https://raw.githubusercontent.com/lje02/vp/main/bot.sh"
 
 # 颜色定义
 RED='\033[0;31m'
