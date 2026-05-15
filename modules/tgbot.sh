@@ -103,122 +103,6 @@ get_links_menu() {
     echo "$buttons"
 }
 
-# --- 监控函数 (定义在函数内，可以使用 local) ---
-get_singbox_detailed_status() {
-    local api_conn=$(curl -s http://127.0.0.1:$API_PORT/connections | jq '.connections | length' 2>/dev/null)
-    [[ -z "$api_conn" || "$api_conn" == "null" ]] && api_conn=$(ss -tnp 2>/dev/null | grep sing-box | grep -c ESTABLISHED)
-
-    local ports=$(ss -tlnp 2>/dev/null | grep sing-box | awk '{print $4}' | awk -F':' '{print $NF}' | sort -un | tr '\n' ' ' )
-    [[ -z "$ports" ]] && ports="无"
-
-    local pid=$(pgrep -f sing-box | head -n 1)
-    local status="❌ 已停止"
-    local runtime="N/A"
-    local cpu="0"
-    local mem="0 MB"
-
-    if [[ ! -z "$pid" ]]; then
-        status="✅ 运行中"
-        runtime=$(ps -o etimes= -p "$pid" | awk '{printf "%02d:%02d:%02d", $1/3600, ($1%3600)/60, $1%60}')
-        cpu=$(ps -p "$pid" -o %cpu= | xargs)
-        mem=$(ps -p "$pid" -o rss= | awk '{printf "%.2f MB", $1/1024}')
-    fi
-
-    cat << EOF
-🔷 *Sing-box 服务监控*
-━━━━━━━━━━━━━━━━━━━━━━━━
-🟢 *服务状态*: $status
-🔹 *进程 ID*: ${pid:-N/A}
-🔹 *运行时长*: $runtime
-🔹 *CPU 占用*: ${cpu}%
-🔹 *内存占用*: $mem
-🔹 *监听端口*: $ports
-🔹 *活跃连接*: $api_conn
-━━━━━━━━━━━━━━━━━━━━━━━━
-🕒 $(date '+%Y-%m-%d %H:%M:%S')
-EOF
-}
-
-get_system_stats() {
-    local uptime=$(uptime -p | sed 's/up //')
-    local mem_info=$(free -m | awk '/Mem:/ {printf "%d %d %.2f", $3, $2, $3/$2*100}')
-    local mem_used=$(echo $mem_info | awk '{print $1}')
-    local mem_total=$(echo $mem_info | awk '{print $2}')
-    local mem_per=$(echo $mem_info | awk '{print $3}')
-    local load=$(uptime | awk -F'load average:' '{print $2}' | xargs)
-    local cpu_per=$(top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}')
-    
-    local dev=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1)
-    local rx_bytes=$(cat /proc/net/dev 2>/dev/null | grep "${dev}:" | awk -F: '{print $2}' | awk '{print $1}')
-    local tx_bytes=$(cat /proc/net/dev 2>/dev/null | grep "${dev}:" | awk -F: '{print $2}' | awk '{print $9}')
-    local rx=$(awk -v rx="${rx_bytes:-0}" 'BEGIN { printf "%.2f GB", rx/1073741824 }')
-    local tx=$(awk -v tx="${tx_bytes:-0}" 'BEGIN { printf "%.2f GB", tx/1073741824 }')
-
-    cat << EOF
-📊 *系统监控报告*
-━━━━━━━━━━━━━━━━━━━━━━━━
-🔹 *CPU 占用*: ${cpu_per}%
-🔹 *内存占用*: ${mem_used}/${mem_total}MB (${mem_per}%)
-🔹 *系统负载*: $load
-🔹 *网卡流量*: ⬇️$rx | ⬆️$tx
-🔹 *系统运行*: $uptime
-━━━━━━━━━━━━━━━━━━━━━━━━
-🕒 $(date '+%Y-%m-%d %H:%M:%S')
-EOF
-}
-
-get_full_report() {
-    echo -e "$(get_singbox_detailed_status)\n\n$(get_system_stats)"
-}
-
-# --- 自动报警函数 (放在循环外，可以使用 local) ---
-check_system_alerts() {
-    local now=$(date +%s)
-    # 每 120 秒检查一次，避免刷屏
-    [[ $((now - LAST_ALERT_TIME)) -lt 120 ]] && return
-
-    # 1. 检查服务状态
-    if ! systemctl is-active --quiet sing-box; then
-        send_msg "$ADMIN_ID" "🚨 *严重警告*
-━━━━━━━━━━━━━━━━━━━━━━━━
-❌ Sing-box 服务已停止！
-请立即检查服务器状态。
-━━━━━━━━━━━━━━━━━━━━━━━━
-🕒 $(date '+%Y-%m-%d %H:%M:%S')"
-        LAST_ALERT_TIME=$now
-        return
-    fi
-
-    # 2. 检查负载 (CPU/内存 > 90%)
-    local mem_per=$(free | awk '/Mem:/ {printf "%.0f", $3/$2 * 100.0}')
-    local cpu_per=$(top -bn1 | grep "Cpu(s)" | awk '{printf "%.0f", 100 - $8}')
-    
-    if [ "$cpu_per" -gt 90 ] || [ "$mem_per" -gt 90 ]; then
-        send_msg "$ADMIN_ID" "⚠️ *高负载预警*
-━━━━━━━━━━━━━━━━━━━━━━━━
-🔹 CPU 占用: ${cpu_per}%
-🔹 内存占用: ${mem_per}%
-━━━━━━━━━━━━━━━━━━━━━━━━
-🚨 服务器压力过大，可能存在环路或异常连接！"
-        LAST_ALERT_TIME=$now
-    fi
-}
-
-send_msg() {
-    curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
-        -d "chat_id=$1" \
-        -d "parse_mode=Markdown" \
-        -d "text=$2" > /dev/null
-}
-
-send_inline_keyboard() {
-    curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
-        -d "chat_id=$1" \
-        -d "parse_mode=Markdown" \
-        -d "text=$2" \
-        -d "reply_markup=$3" > /dev/null
-}
-
 # --- 主循环 ---
 while true; do
     # 执行报警检查
@@ -364,6 +248,122 @@ EOF
     systemctl daemon-reload
     systemctl enable --now tg-bot
     echo -e "${GREEN}✔ 机器人已启动！请在 TG 发送 /status 试试。${PLAIN}"
+}
+
+# --- 监控函数 (定义在函数内，可以使用 local) ---
+get_singbox_detailed_status() {
+    local api_conn=$(curl -s http://127.0.0.1:$API_PORT/connections | jq '.connections | length' 2>/dev/null)
+    [[ -z "$api_conn" || "$api_conn" == "null" ]] && api_conn=$(ss -tnp 2>/dev/null | grep sing-box | grep -c ESTABLISHED)
+
+    local ports=$(ss -tlnp 2>/dev/null | grep sing-box | awk '{print $4}' | awk -F':' '{print $NF}' | sort -un | tr '\n' ' ' )
+    [[ -z "$ports" ]] && ports="无"
+
+    local pid=$(pgrep -f sing-box | head -n 1)
+    local status="❌ 已停止"
+    local runtime="N/A"
+    local cpu="0"
+    local mem="0 MB"
+
+    if [[ ! -z "$pid" ]]; then
+        status="✅ 运行中"
+        runtime=$(ps -o etimes= -p "$pid" | awk '{printf "%02d:%02d:%02d", $1/3600, ($1%3600)/60, $1%60}')
+        cpu=$(ps -p "$pid" -o %cpu= | xargs)
+        mem=$(ps -p "$pid" -o rss= | awk '{printf "%.2f MB", $1/1024}')
+    fi
+
+    cat << EOF
+🔷 *Sing-box 服务监控*
+━━━━━━━━━━━━━━━━━━━━━━━━
+🟢 *服务状态*: $status
+🔹 *进程 ID*: ${pid:-N/A}
+🔹 *运行时长*: $runtime
+🔹 *CPU 占用*: ${cpu}%
+🔹 *内存占用*: $mem
+🔹 *监听端口*: $ports
+🔹 *活跃连接*: $api_conn
+━━━━━━━━━━━━━━━━━━━━━━━━
+🕒 $(date '+%Y-%m-%d %H:%M:%S')
+EOF
+}
+
+get_system_stats() {
+    local uptime=$(uptime -p | sed 's/up //')
+    local mem_info=$(free -m | awk '/Mem:/ {printf "%d %d %.2f", $3, $2, $3/$2*100}')
+    local mem_used=$(echo $mem_info | awk '{print $1}')
+    local mem_total=$(echo $mem_info | awk '{print $2}')
+    local mem_per=$(echo $mem_info | awk '{print $3}')
+    local load=$(uptime | awk -F'load average:' '{print $2}' | xargs)
+    local cpu_per=$(top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}')
+    
+    local dev=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -n1)
+    local rx_bytes=$(cat /proc/net/dev 2>/dev/null | grep "${dev}:" | awk -F: '{print $2}' | awk '{print $1}')
+    local tx_bytes=$(cat /proc/net/dev 2>/dev/null | grep "${dev}:" | awk -F: '{print $2}' | awk '{print $9}')
+    local rx=$(awk -v rx="${rx_bytes:-0}" 'BEGIN { printf "%.2f GB", rx/1073741824 }')
+    local tx=$(awk -v tx="${tx_bytes:-0}" 'BEGIN { printf "%.2f GB", tx/1073741824 }')
+
+    cat << EOF
+📊 *系统监控报告*
+━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 *CPU 占用*: ${cpu_per}%
+🔹 *内存占用*: ${mem_used}/${mem_total}MB (${mem_per}%)
+🔹 *系统负载*: $load
+🔹 *网卡流量*: ⬇️$rx | ⬆️$tx
+🔹 *系统运行*: $uptime
+━━━━━━━━━━━━━━━━━━━━━━━━
+🕒 $(date '+%Y-%m-%d %H:%M:%S')
+EOF
+}
+
+get_full_report() {
+    echo -e "$(get_singbox_detailed_status)\n\n$(get_system_stats)"
+}
+
+# --- 自动报警函数 (放在循环外，可以使用 local) ---
+check_system_alerts() {
+    local now=$(date +%s)
+    # 每 120 秒检查一次，避免刷屏
+    [[ $((now - LAST_ALERT_TIME)) -lt 120 ]] && return
+
+    # 1. 检查服务状态
+    if ! systemctl is-active --quiet sing-box; then
+        send_msg "$ADMIN_ID" "🚨 *严重警告*
+━━━━━━━━━━━━━━━━━━━━━━━━
+❌ Sing-box 服务已停止！
+请立即检查服务器状态。
+━━━━━━━━━━━━━━━━━━━━━━━━
+🕒 $(date '+%Y-%m-%d %H:%M:%S')"
+        LAST_ALERT_TIME=$now
+        return
+    fi
+
+    # 2. 检查负载 (CPU/内存 > 90%)
+    local mem_per=$(free | awk '/Mem:/ {printf "%.0f", $3/$2 * 100.0}')
+    local cpu_per=$(top -bn1 | grep "Cpu(s)" | awk '{printf "%.0f", 100 - $8}')
+    
+    if [ "$cpu_per" -gt 90 ] || [ "$mem_per" -gt 90 ]; then
+        send_msg "$ADMIN_ID" "⚠️ *高负载预警*
+━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 CPU 占用: ${cpu_per}%
+🔹 内存占用: ${mem_per}%
+━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 服务器压力过大，可能存在环路或异常连接！"
+        LAST_ALERT_TIME=$now
+    fi
+}
+
+send_msg() {
+    curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+        -d "chat_id=$1" \
+        -d "parse_mode=Markdown" \
+        -d "text=$2" > /dev/null
+}
+
+send_inline_keyboard() {
+    curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+        -d "chat_id=$1" \
+        -d "parse_mode=Markdown" \
+        -d "text=$2" \
+        -d "reply_markup=$3" > /dev/null
 }
 
 # ============================================
