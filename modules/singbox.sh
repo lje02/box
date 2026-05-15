@@ -841,11 +841,11 @@ manage_routing() {
         echo -e "${YELLOW}         路由分流与链式代理管理         ${PLAIN}"
         echo -e "${YELLOW}================================================${PLAIN}"
         echo -e "${CYAN}--- 常规网站分流 ---${PLAIN}"
-        echo " 1. 添加分流规则(多层中转先添加跳转节点)"
+        echo " 1. 添加分流规则(入站➡️跳板➡️分流 先加跳转节点)"
         echo " 2. 查看当前分流规则"
         echo " 3. 删除特定分流规则"
         echo -e "\n${CYAN}--- 链式代理与跳板 ---${PLAIN}"
-        echo " 4. 添加跳转节点 (指定入站 -> 新跳板 -> 原出口)"
+        echo " 4. 添加跳转节点 (可链路加分流配合)"
         echo " 5. 查看当前活跃链式链路"
         echo " 6. 重置入站规则 (取消链式，恢复直连)"
         echo "------------------------------------------------"
@@ -881,7 +881,7 @@ manage_routing() {
                 esac
 
                 echo -e "\n${CYAN}3. 请配置目标出站:${PLAIN}"
-                echo "1) 粘贴链接 | 2) 手动输入 | 3) 自动优选 (URL-Test) | 4) 节点组 (Selector)"
+                echo "1) 粘贴链接 | 2) 手动输入 | 3) 自动优选 | 4) 轮询分流"
                 read -p "选择 [1-4]: " out_mode
                  
                 OUT_TAG="route-out-$(date +%s)"
@@ -894,7 +894,7 @@ manage_routing() {
                     OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
                         '{"type":"shadowsocks","tag":$t,"server":$s,"server_port":($p|tonumber),"method":$m,"password":$pass}')
                 elif [[ "$out_mode" == "2" ]]; then
-                    echo -e "1) SS | 2) Socks5 | 3) HTTPS"
+                    echo -e "1) SS | 2) Socks5 | 3) HTTP/HTTPS"
                     read -p "协议: " h_type
                     read -p "地址: " R_ADDR
                     read -p "端口: " R_PORT
@@ -1215,14 +1215,13 @@ while true; do
     echo -e "  ${GREEN}1.${PLAIN} 安装/重装 sing-box"
     echo -e "  ${GREEN}2.${PLAIN} 节点快速配置"
     echo -e "  ${GREEN}3.${PLAIN} 配置/分享链接查看"
-    echo -e "  ${GREEN}4.${PLAIN} 链路管理（中转/落地/链式）"
-    echo -e "  ${GREEN}5.${PLAIN} 分流设置/管理"
-    echo -e "  ${GREEN}6.${PLAIN} 更新sing-box内核"
-    echo -e "  ${GREEN}7.${PLAIN} 备份/还原配置"
-    echo -e "  ${GREEN}8.${PLAIN} 开启 BBR 网络加速"
-    echo -e "  ${GREEN}9.${PLAIN} 申请 SSL 域名证书 (ACME)"
-    echo -e " ${GREEN}10.${PLAIN} 添加出站/分流/自动优选/负载"
-    echo -e " ${GREEN}11.${PLAIN} 更改配置/删除"
+    echo -e "  ${GREEN}4.${PLAIN} 分流/落地/多跳转/设置/管理"
+    echo -e "  ${GREEN}5.${PLAIN} 更新sing-box内核"
+    echo -e "  ${GREEN}6.${PLAIN} 备份/还原配置"
+    echo -e "  ${GREEN}7.${PLAIN} 开启 BBR 网络加速"
+    echo -e "  ${GREEN}8.${PLAIN} 申请 SSL 域名证书 (ACME)"
+    echo -e " ${GREEN}9.${PLAIN} 添加出站/用于/自动优选/轮询"
+    echo -e " ${GREEN}10.${PLAIN} 更改配置/删除"
     echo -e "-----------------------------------------------"
     #底部菜单
     echo -e " ${GREEN}[88]${PLAIN} 启动  ${GREEN}[99]${PLAIN} 停止  ${GREEN}[66]${PLAIN} 重启  ${RED}[77]${PLAIN} 卸载  ${RED}[0]${PLAIN} 退出"
@@ -1233,14 +1232,13 @@ while true; do
         1) install_base ;;
         2) add_node ;;
         3) manage_configs ;;
-        4) chain_proxy ;;
-        5) manage_routing ;;
-        6) update_kernel ;;
-        7) backup_restore ;;
-        8) enable_bbr ;;
-        9) apply_cert ;;
-        10) add_outbound ;;
-        11) edit_node ;;
+        4) manage_routing ;;
+        5) update_kernel ;;
+        6) backup_restore ;;
+        7) enable_bbr ;;
+        8) apply_cert ;;
+        9) add_outbound ;;
+        10) edit_node ;;
         88)
             echo -e "${YELLOW}正在启动 Sing-box...${PLAIN}"
             systemctl start sing-box
