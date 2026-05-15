@@ -383,9 +383,31 @@ EOF
 # ============================================
 
 uninstall_bot() {
-    systemctl stop tg-bot && systemctl disable tg-bot
-    rm -rf "$BOT_DIR" "$BOT_SERVICE"
-    echo -e "${GREEN}✔ 机器人已成功卸载${PLAIN}"
+    echo -e "${YELLOW}正在安全卸载机器人程序...${PLAIN}"
+
+    # 1. 停止机器人服务
+    systemctl stop tg-bot >/dev/null 2>&1
+    systemctl disable tg-bot >/dev/null 2>&1
+
+    # 2. 删除 systemd 服务文件
+    rm -f /etc/systemd/system/tg-bot.service
+
+    # 3. 刷新系统服务缓存 (关键：让系统彻底忘记机器人进程)
+    systemctl daemon-reload
+    systemctl reset-failed
+    
+    # 只删脚本、配置文件和偏移量记录
+    rm -f "/etc/sing-box/tg_worker.sh"
+    rm -f "/etc/sing-box/tg_bot.conf"
+    rm -f "/etc/sing-box/tg_bot_offset"
+
+    # --- ⚠️ 保护区域 ---
+    # 显式保留：/etc/sing-box/links
+    # 显式保留：/etc/sing-box/config.json
+    # ------------------
+
+    echo -e "${GREEN}✔ 机器人逻辑组件已卸载${PLAIN}"
+    echo -e "${BLUE}ℹ 节点数据 (links/) 与主配置 (config.json) 已保留${PLAIN}"
 }
 
 update_bot() {
