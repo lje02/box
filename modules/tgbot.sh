@@ -182,8 +182,8 @@ get_full_report() {
 
 check_system_alerts() {
     local now=$(date +%s)
-    # 缩短冷却时间到 30 秒，让你更快发现问题
-    [[ $((now - LAST_ALERT_TIME)) -lt 30 ]] && return
+    # 缩短冷却时间到 60 秒
+    [[ $((now - LAST_ALERT_TIME)) -lt 60 ]] && return
 
     # 1. 检查服务状态
     if ! systemctl is-active --quiet sing-box; then
