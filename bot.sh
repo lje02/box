@@ -87,6 +87,10 @@ LINK_DIR="/etc/sing-box/links"
 OFFSET_FILE="/etc/sing-box/tg_bot_offset"
 LAST_ALERT_TIME=0
 
+# 获取公网 IP 和核心数
+SERVER_IP=$(curl -s --max-time 5 http://ip-api.com/line?fields=query || echo "未知IP")
+CPU_CORES=$(nproc)
+
 # ============================================
 # --- 函数定义 (已被移入内部，供工作脚本调用) ---
 # ============================================
@@ -170,37 +174,47 @@ EOF
 }
 
 get_full_report() {
+    local report="🌐 *服务器 IP*: \`$SERVER_IP\`\n"
+    report+="$(get_singbox_detailed_status)\n\n"
+    report+="$(get_system_stats)"
+    echo -e "$report"
     echo -e "$(get_singbox_detailed_status)\n\n$(get_system_stats)"
 }
 
 check_system_alerts() {
     local now=$(date +%s)
-    # 每 120 秒检查一次，避免刷屏
-    [[ $((now - LAST_ALERT_TIME)) -lt 120 ]] && return
+    # 缩短冷却时间到 30 秒，让你更快发现问题
+    [[ $((now - LAST_ALERT_TIME)) -lt 30 ]] && return
 
     # 1. 检查服务状态
     if ! systemctl is-active --quiet sing-box; then
-        send_msg "$ADMIN_ID" "🚨 *严重警告*
+        send_msg "$ADMIN_ID" "🚨 *服务宕机*
 ━━━━━━━━━━━━━━━━━━━━━━━━
-❌ Sing-box 服务已停止！
-请立即检查服务器状态。
-━━━━━━━━━━━━━━━━━━━━━━━━
-🕒 $(date '+%Y-%m-%d %H:%M:%S')"
+📍 *服务器*: \`$SERVER_IP\`
+❌ Sing-box 已停止运行！"
         LAST_ALERT_TIME=$now
         return
     fi
 
-    # 2. 检查负载 (CPU/内存 > 90%)
-    local mem_per=$(free | awk '/Mem:/ {printf "%.0f", $3/$2 * 100.0}')
-    local cpu_per=$(top -bn1 | grep "Cpu(s)" | awk '{printf "%.0f", 100 - $8}')
-    
-    if [ "$cpu_per" -gt 90 ] || [ "$mem_per" -gt 90 ]; then
-        send_msg "$ADMIN_ID" "⚠️ *高负载预警*
+    # 2. 系统负载检查 (1分钟平均负载)
+    local load_1min=$(uptime | awk -F'load average:' '{print $2}' | awk -F',' '{print $1}' | xargs)
+    local load_int=$(echo "$load_1min * 100" | bc | cut -d. -f1)
+    local limit_int=$(( CPU_CORES * 100 ))
+
+    # 3. 内存检查
+    local mem_avail=$(free | grep Mem: | awk '{print $7}')
+    local mem_total=$(free | grep Mem: | awk '{print $2}')
+    local mem_per=$(( (mem_total - mem_avail) * 100 / mem_total ))
+
+    # 报警判定
+    if [ "$load_int" -gt "$limit_int" ] || [ "$mem_per" -gt 90 ]; then
+        send_msg "$ADMIN_ID" "⚠️ *高负载报警*
 ━━━━━━━━━━━━━━━━━━━━━━━━
-🔹 CPU 占用: ${cpu_per}%
-🔹 内存占用: ${mem_per}%
+📍 *服务器*: \`$SERVER_IP\`
+🔹 *当前负载*: $load_1min (核心: $CPU_CORES)
+🔹 *内存占用*: ${mem_per}%
 ━━━━━━━━━━━━━━━━━━━━━━━━
-🚨 服务器压力过大，可能存在环路或异常连接！"
+🕒 $(date '+%H:%M:%S')"
         LAST_ALERT_TIME=$now
     fi
 }
