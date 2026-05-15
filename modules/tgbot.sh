@@ -9,6 +9,7 @@ BOT_SCRIPT="/etc/sing-box/tg_worker.sh"  # 明确工作脚本路径
 BOT_CONF="$BOT_DIR/tg_bot.conf"
 BOT_SERVICE="/etc/systemd/system/tg-bot.service"
 SING_BOX_CONFIG="/etc/sing-box/config.json"
+LINK_DIR="/etc/sing-box/links"
 UPDATE_URL="https://raw.githubusercontent.com/lje02/vp/main/bot.sh"
 
 # 颜色定义
@@ -284,13 +285,21 @@ while true; do
                 getlink_*)
                     target_file=${CB_DATA#getlink_}
                     file_path="$LINK_DIR/$target_file"
-                    if [[ -f "$file_path" ]]; then
-                        link_content=$(cat "$file_path")
+                    if [[ -f "$file_full_path" ]]; then
+                        link_content=$(cat "$file_full_path" | tr -d '\n\r') # 去除换行符
                         back_kb='{"inline_keyboard": [[{"text":"⬅️ 返回列表","callback_data":"back_to_links"}]]}'
-                        send_msg "$CHAT_ID" "📋 *节点分享链接 ($target_file)*：\n\n\`$link_content\`"
-                        curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID&text=已读取 $target_file"
-                    else
-                        curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID&text=文件已不存在"
+                        msg_text="📋 *节点分享链接*
+━━━━━━━━━━━━━━━━━━━━━━━━
+📄 文件: \`$target_file\`
+🔗 链接:
+\`$link_content\`
+━━━━━━━━━━━━━━━━━━━━━━━━"
+
+                        send_inline_keyboard "$CHAT_ID" "$msg_text" "$back_kb"
+                        curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID&text=读取成功"
+                    esle
+                        send_msg "$CHAT_ID" "❌ 错误：找不到文件 \`$target_file\`"
+                        curl -s "https://api.telegram.org/bot$TOKEN/answerCallbackQuery?callback_query_id=$CB_ID&text=文件不存在"
                     fi
                     ;;
                 back_to_links)
@@ -344,7 +353,6 @@ EOF
 #          其他管理函数
 # ============================================
 
-LINK_DIR="/etc/sing-box/links"
 get_links_menu() {
     # 检查目录是否存在，不存在则创建
     [[ ! -d "$LINK_DIR" ]] && mkdir -p "$LINK_DIR"
