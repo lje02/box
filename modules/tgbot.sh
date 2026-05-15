@@ -238,6 +238,7 @@ while true; do
 /singbox - 节点服务管理
 /system  - 仅看系统状态
 /myid    - 查看你的 ID
+/links   - 节点配置
 ━━━━━━━━━━━━━━━━━━━━━━━━"
                     ;;
                 /status)
