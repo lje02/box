@@ -178,7 +178,6 @@ get_full_report() {
     report+="$(get_singbox_detailed_status)\n\n"
     report+="$(get_system_stats)"
     echo -e "$report"
-    echo -e "$(get_singbox_detailed_status)\n\n$(get_system_stats)"
 }
 
 check_system_alerts() {
