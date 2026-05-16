@@ -9,7 +9,7 @@ BOT_SCRIPT="/etc/sing-box/tg_worker.sh"
 BOT_CONF="$BOT_DIR/tg_bot.conf"
 BOT_SERVICE="/etc/systemd/system/tg-bot.service"
 SING_BOX_CONFIG="/etc/sing-box/config.json"
-UPDATE_URL="https://raw.githubusercontent.com/lje02/vp/main/bot.sh"
+UPDATE_URL="https://raw.githubusercontent.com/lje02/vp/main/modules/tgbot.sh"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
