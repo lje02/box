@@ -1158,236 +1158,296 @@ manage_routing() {
 
             4)
                 # =====================================================
-                # 链式代理：入站 -> 跳板(第一跳) -> 落地组(多节点) -> 互联网
+                # 链式代理 — 正确的多跳模型
                 #
-                # 落地支持三种模式：
-                #   A. 单落地  — 直接指定一个已有出站
-                #   B. 自动优选 — urltest 组，自动选延迟最低节点
-                #   C. 轮询    — selector 组，手动或负载均衡
+                # sing-box detour 规则：
+                #   每个节点的 detour 指向「下一跳」tag
+                #   最后一跳（落地）无 detour，直接出互联网
+                #
+                # 结构示例（3跳）:
+                #   路由规则: 入站 → hop1
+                #   hop1 { detour: hop2 }
+                #   hop2 { detour: land-group }
+                #   land-group { urltest/selector, 成员无 detour }
+                #
+                # 本脚本流程:
+                #   [步骤1] 选入站
+                #   [步骤2] 配置落地（最后一跳）— 单节点/自动优选/轮询
+                #   [步骤3] 逐跳添加中间跳板（可循环添加多个）
+                #   [步骤4] 写入配置
                 # =====================================================
                 clear
-                echo -e "${YELLOW}--- 链式代理配置 ---${PLAIN}"
-                echo -e "${CYAN}架构: 入站 ──▶ 跳板(本脚本添加) ──▶ 落地节点组 ──▶ 互联网${PLAIN}\n"
+                echo -e "${YELLOW}━━━ 链式代理配置 ━━━${PLAIN}"
+                echo -e "${CYAN}正确架构: 入站 ──▶ 跳板1 ──▶ [跳板2...] ──▶ 落地组 ──▶ 互联网"
+                echo -e "每跳 detour 指向下一跳，最后一跳（落地）无 detour${PLAIN}\n"
 
-                # ── 步骤 1：选择入站 ──────────────────────────────────
+                # ── 步骤 1：选择入站 ─────────────────────────────────
                 echo -e "${YELLOW}[步骤1] 选择流量来源入站:${PLAIN}"
                 local in_count=$(jq '.inbounds | length' "$CONFIG_FILE")
-                [[ "$in_count" -eq 0 ]] && echo -e "${RED}无入站配置，请先添加节点${PLAIN}" && pause && continue
-                jq -r '.inbounds | keys[] as $i | "  \($i+1)) \(.[$i].tag)  [\(.[$i].type):\(.[$i].listen_port)]"' "$CONFIG_FILE"
+                [[ "$in_count" -eq 0 ]] && echo -e "${RED}无入站配置${PLAIN}" && pause && continue
+                jq -r '.inbounds | keys[] as $i |
+                    "  \($i+1)) \(.[$i].tag)  [\(.[$i].type):\(.[$i].listen_port)]"' "$CONFIG_FILE"
                 read -p "选择序号: " idx
                 [[ -z "$idx" ]] && continue
                 if ! validate_index "$idx" "$in_count"; then pause; continue; fi
                 LOCAL_TAG=$(jq -r ".inbounds[$((idx-1))].tag" "$CONFIG_FILE")
-                echo -e "  已选: ${GREEN}$LOCAL_TAG${PLAIN}\n"
+                echo -e "  ✔ 入站: ${GREEN}$LOCAL_TAG${PLAIN}\n"
 
-                # ── 步骤 2：配置落地节点组 ───────────────────────────
-                echo -e "${YELLOW}[步骤2] 配置落地节点 (出口):${PLAIN}"
+                # ── 步骤 2：配置落地（最后一跳）────────────────────────
+                # 落地节点不带 detour，直接出互联网
+                # 支持：单节点 / urltest自动优选 / selector轮询
+                echo -e "${YELLOW}[步骤2] 配置落地节点（最后出口，无 detour）:${PLAIN}"
 
-                # 列出所有可用出站（排除内置的 direct/dns/block）
-                local out_count
-                out_count=$(jq '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block" and .type != "urltest" and .type != "selector")] | length' "$CONFIG_FILE")
+                # 辅助：列出基础出站（排除 direct/dns/block/urltest/selector）
+                _list_base_outbounds() {
+                    jq -r '[.outbounds[] | select(
+                        .type != "direct" and .type != "dns" and
+                        .type != "block" and .type != "urltest" and .type != "selector"
+                    )] | keys[] as $i |
+                    "  \($i+1)) [\(.[$i].type)] \(.[$i].tag)  \(.[$i].server // ""):\(.[$i].server_port // "")"' "$CONFIG_FILE"
+                }
+                _count_base_outbounds() {
+                    jq '[.outbounds[] | select(
+                        .type != "direct" and .type != "dns" and
+                        .type != "block" and .type != "urltest" and .type != "selector"
+                    )] | length' "$CONFIG_FILE"
+                }
+                _get_base_outbound_tag() {
+                    jq -r "[.outbounds[] | select(
+                        .type != \"direct\" and .type != \"dns\" and
+                        .type != \"block\" and .type != \"urltest\" and .type != \"selector\"
+                    )] | .[$(($1-1))].tag" "$CONFIG_FILE"
+                }
 
-                if [[ "$out_count" -eq 0 ]]; then
-                    echo -e "${RED}✘ 没有可用的出站节点，请先在「添加出站节点」中导入落地节点${PLAIN}"
+                local base_out_count
+                base_out_count=$(_count_base_outbounds)
+                if [[ "$base_out_count" -eq 0 ]]; then
+                    echo -e "${RED}✘ 无可用出站节点，请先在「添加出站节点」中导入${PLAIN}"
                     pause; continue
                 fi
+                _list_base_outbounds
 
-                echo -e "  可用出站节点:"
-                jq -r '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block" and .type != "urltest" and .type != "selector")] | keys[] as $i | "  \($i+1)) [\(.[$i].type)] \(.[$i].tag)  \(.[$i].server // ""):\(.[$i].server_port // "")"' "$CONFIG_FILE"
-
-                echo -e "\n  选择模式:"
-                echo "  A) 单落地  — 选一个节点直接用"
-                echo "  B) 自动优选 — 选多个节点，自动选延迟最低的"
-                echo "  C) 轮询    — 选多个节点，手动切换或负载分流"
+                echo -e "\n  落地模式:"
+                echo "  A) 单节点  — 选 1 个，固定落地"
+                echo "  B) 自动优选 — 选多个，urltest 自动选最低延迟"
+                echo "  C) 轮询    — 选多个，selector 手动/负载切换"
                 read -p "  模式 [A/B/C]: " land_mode
                 land_mode=$(echo "$land_mode" | tr 'abc' 'ABC')
 
-                local LAND_TAG=""        # 落地组最终 tag（写入跳板 detour）
-                local LAND_NODES_JSON="" # 需要追加的新出站 JSON 数组（仅在生成新组时有值）
-
-                # ── 从出站列表取 tag（只含非内置节点）
-                _get_land_tag_by_idx() {
-                    jq -r "[.outbounds[] | select(.type != \"direct\" and .type != \"dns\" and .type != \"block\" and .type != \"urltest\" and .type != \"selector\")] | .[$(($1-1))].tag" "$CONFIG_FILE"
-                }
+                # LAND_FINAL_TAG : 落地的最终 tag（上一跳的 detour 指向它）
+                # LAND_NEW_JSON  : 若需新建组节点，此处存 JSON；单节点模式为空
+                local LAND_FINAL_TAG="" LAND_NEW_JSON=""
+                local member_tags_arr=()
 
                 if [[ "$land_mode" == "A" ]]; then
-                    # 单落地
                     read -p "  选择序号: " l_idx
-                    if ! validate_index "$l_idx" "$out_count"; then pause; continue; fi
-                    LAND_TAG=$(_get_land_tag_by_idx "$l_idx")
-                    echo -e "  落地节点: ${GREEN}$LAND_TAG${PLAIN}"
+                    if ! validate_index "$l_idx" "$base_out_count"; then pause; continue; fi
+                    LAND_FINAL_TAG=$(_get_base_outbound_tag "$l_idx")
+                    echo -e "  ✔ 落地: ${GREEN}$LAND_FINAL_TAG${PLAIN}"
 
                 elif [[ "$land_mode" == "B" || "$land_mode" == "C" ]]; then
-                    # 多落地：选成员
-                    read -p "  选择序号 (逗号隔开，如 1,3,5): " m_idxs
+                    read -p "  选择序号 (逗号隔开): " m_idxs
                     [[ -z "$m_idxs" ]] && continue
-
-                    # 收集成员 tag 并校验
-                    local member_tags_arr=()
-                    local bad_idx=0
+                    local bad=0
                     while IFS= read -r mi; do
                         mi=$(echo "$mi" | tr -d ' ')
-                        if ! validate_index "$mi" "$out_count" 2>/dev/null; then
-                            echo -e "${RED}  序号 $mi 超出范围${PLAIN}"; bad_idx=1; break
+                        if ! validate_index "$mi" "$base_out_count" 2>/dev/null; then
+                            echo -e "${RED}  序号 $mi 无效${PLAIN}"; bad=1; break
                         fi
-                        member_tags_arr+=( "$(_get_land_tag_by_idx "$mi")" )
+                        member_tags_arr+=( "$(_get_base_outbound_tag "$mi")" )
                     done < <(echo "$m_idxs" | tr ',' '\n')
-                    [[ "$bad_idx" -eq 1 ]] && pause && continue
-
+                    [[ "$bad" -eq 1 ]] && pause && continue
                     if [[ ${#member_tags_arr[@]} -lt 2 ]]; then
-                        echo -e "${RED}  多落地模式至少选 2 个节点${PLAIN}"; pause; continue
+                        echo -e "${RED}  至少选 2 个节点${PLAIN}"; pause; continue
                     fi
-
-                    # 把 bash 数组转成 jq 能用的 JSON 数组
                     local MEMBER_JSON
                     MEMBER_JSON=$(printf '%s\n' "${member_tags_arr[@]}" | jq -R . | jq -s .)
-
-                    LAND_TAG="land-group-$(date +%s)"
+                    LAND_FINAL_TAG="land-$(date +%s)"
 
                     if [[ "$land_mode" == "B" ]]; then
-                        # 自动优选 urltest
-                        read -p "  测速 URL (回车用默认 generate_204): " test_url
+                        read -p "  测速 URL (回车默认): " test_url
                         test_url=${test_url:-"https://www.gstatic.com/generate_204"}
-                        read -p "  测速间隔 (回车默认 3m): " test_interval
-                        test_interval=${test_interval:-"3m0s"}
-                        read -p "  容差 ms (回车默认 50，在最优延迟+50ms内都可切换): " tolerance
-                        tolerance=${tolerance:-50}
-
-                        LAND_NODES_JSON=$(jq -n \
-                            --arg t "$LAND_TAG" \
-                            --argjson m "$MEMBER_JSON" \
-                            --arg url "$test_url" \
-                            --arg iv "$test_interval" \
-                            --argjson tol "$tolerance" \
-                            '[{
-                                "type": "urltest",
-                                "tag": $t,
-                                "outbounds": $m,
-                                "url": $url,
-                                "interval": $iv,
-                                "tolerance": $tol
-                            }]')
-                        echo -e "  已创建自动优选组: ${GREEN}$LAND_TAG${PLAIN} (${#member_tags_arr[@]} 个落地节点)"
-
+                        read -p "  测速间隔 (回车默认 3m): " test_iv
+                        test_iv=${test_iv:-"3m0s"}
+                        read -p "  容差 ms (回车默认 50): " tol
+                        tol=${tol:-50}
+                        # 确保 tolerance 是纯数字
+                        [[ ! "$tol" =~ ^[0-9]+$ ]] && tol=50
+                        LAND_NEW_JSON=$(jq -n \
+                            --arg t "$LAND_FINAL_TAG" --argjson m "$MEMBER_JSON" \
+                            --arg url "$test_url" --arg iv "$test_iv" --argjson tol "$tol" \
+                            '{"type":"urltest","tag":$t,"outbounds":$m,
+                              "url":$url,"interval":$iv,"tolerance":$tol}')
+                        echo -e "  ✔ 自动优选组: ${GREEN}$LAND_FINAL_TAG${PLAIN} (${#member_tags_arr[@]} 节点)"
                     else
-                        # 轮询 selector
-                        echo -e "  轮询组说明: 默认使用第一个节点，可在客户端或 API 手动切换"
-                        LAND_NODES_JSON=$(jq -n \
-                            --arg t "$LAND_TAG" \
-                            --argjson m "$MEMBER_JSON" \
-                            '[{
-                                "type": "selector",
-                                "tag": $t,
-                                "outbounds": $m,
-                                "default": ($m[0])
-                            }]')
-                        echo -e "  已创建轮询选择组: ${GREEN}$LAND_TAG${PLAIN} (${#member_tags_arr[@]} 个落地节点)"
+                        LAND_NEW_JSON=$(jq -n \
+                            --arg t "$LAND_FINAL_TAG" --argjson m "$MEMBER_JSON" \
+                            '{"type":"selector","tag":$t,"outbounds":$m,"default":($m[0])}')
+                        echo -e "  ✔ 轮询选择组: ${GREEN}$LAND_FINAL_TAG${PLAIN} (${#member_tags_arr[@]} 节点)"
                     fi
                 else
                     echo -e "${RED}无效输入${PLAIN}"; pause; continue
                 fi
 
-                # ── 步骤 3：配置第一跳跳板节点 ───────────────────────
-                echo -e "\n${YELLOW}[步骤3] 配置第一跳跳板节点:${PLAIN}"
-                echo -e "  ${CYAN}提示: 跳板是流量离开本机后的第一站，落地是最终出口${PLAIN}"
-                echo "  1) 粘贴链接（全协议支持）"
-                echo "  2) 从已有出站中选择"
-                echo "  3) 手动输入"
-                read -p "  选择 [1-3]: " hop_src
+                # ── 步骤 3：逐跳添加中间跳板 ────────────────────────
+                # 每跳 detour 指向下一跳；第一个添加的跳板 detour 指向 LAND_FINAL_TAG
+                # 用户可以反复添加，最后添加的是第一跳（路由规则指向它）
+                #
+                # 内部用 chain_tags 数组存跳板顺序（倒序），写入时正序链接
+                # chain_tags[0] = 最后添加的跳板（第一跳）
+                # chain_tags[-1]= 最先添加的跳板（倒数第二跳，detour→落地）
+                echo -e "\n${YELLOW}[步骤3] 配置跳板节点（从最靠近落地的一跳开始添加）:${PLAIN}"
+                echo -e "  ${CYAN}提示: 先加离落地最近的一跳，最后加离入站最近的一跳${PLAIN}"
+                echo -e "  ${CYAN}例如三跳: 先加跳板2，再加跳板1${PLAIN}\n"
 
-                local HOP_TAG=""
-                local HOP_JSON=""
+                # 存所有跳板 JSON 和 tag（按添加顺序，即从靠近落地→靠近入站）
+                local hop_tags=()       # 所有跳板 tag（按添加顺序）
+                local hop_jsons=()      # 对应 JSON（空字符串=已有节点）
+                # 第一个跳板的 next_tag 是落地组
+                local next_tag="$LAND_FINAL_TAG"
 
-                if [[ "$hop_src" == "1" ]]; then
-                    read -p "  链接: " RAW_LINK
-                    parse_proxy_link "$RAW_LINK"
-                    if [[ -z "$R_ADDR" ]]; then
-                        echo -e "${RED}  解析失败${PLAIN}"; pause; continue
+                while true; do
+                    local hop_num=$(( ${#hop_tags[@]} + 1 ))
+                    echo -e "  ${YELLOW}── 跳板 #$hop_num (detour → ${next_tag}) ──${PLAIN}"
+                    echo "  1) 粘贴链接"
+                    echo "  2) 从已有出站选择"
+                    echo "  3) 手动输入"
+                    echo "  0) 完成，不再添加跳板"
+                    read -p "  选择: " hop_src
+
+                    [[ "$hop_src" == "0" ]] && break
+
+                    local CUR_HOP_TAG="" CUR_HOP_JSON=""
+
+                    if [[ "$hop_src" == "1" ]]; then
+                        read -p "  链接: " RAW_LINK
+                        parse_proxy_link "$RAW_LINK"
+                        if [[ -z "$R_ADDR" ]]; then
+                            echo -e "${RED}  解析失败，请重试${PLAIN}"; continue
+                        fi
+                        local ns=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
+                        CUR_HOP_TAG="hop${hop_num}-${ns:-$(date +%s)}"
+                        # 解析完立刻加上 detour 指向下一跳
+                        CUR_HOP_JSON=$(link_to_outbound_json "$CUR_HOP_TAG" | \
+                            jq --arg d "$next_tag" '. + {"detour":$d}')
+
+                    elif [[ "$hop_src" == "2" ]]; then
+                        echo -e "  可用出站:"
+                        local ao_count
+                        ao_count=$(jq '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block")] | length' "$CONFIG_FILE")
+                        jq -r '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block")] |
+                            keys[] as $i | "  \($i+1)) [\(.[$i].type)] \(.[$i].tag)  detour=\(.[$i].detour // "无")"' "$CONFIG_FILE"
+                        read -p "  序号: " h_idx
+                        if ! validate_index "$h_idx" "$ao_count"; then continue; fi
+                        CUR_HOP_TAG=$(jq -r "[.outbounds[] | select(.type != \"direct\" and .type != \"dns\" and .type != \"block\")] | .[$(($h_idx-1))].tag" "$CONFIG_FILE")
+                        # 标记为已有节点，JSON 为空，写入时就地更新 detour
+                        CUR_HOP_JSON=""
+
+                    elif [[ "$hop_src" == "3" ]]; then
+                        echo "  1) SS  2) Socks5  3) HTTPS"
+                        read -p "  协议: " hop_type
+                        read -p "  地址: " R_ADDR; read -p "  端口: " R_PORT
+                        CUR_HOP_TAG="hop${hop_num}-$(date +%s)"
+                        case $hop_type in
+                            1) read -p "  加密: " R_METHOD; read -p "  密码: " R_PASS ;;
+                            2) read -p "  用户: " R_USER;   read -p "  密码: " R_PASS ;;
+                            3) read -p "  用户: " R_USER;   read -p "  密码: " R_PASS ;;
+                            *) echo -e "${RED}无效${PLAIN}"; continue ;;
+                        esac
+                        CUR_HOP_JSON=$(link_to_outbound_json "$CUR_HOP_TAG" | \
+                            jq --arg d "$next_tag" '. + {"detour":$d}')
+                    else
+                        echo -e "${RED}无效输入${PLAIN}"; continue
                     fi
-                    local name_safe=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
-                    HOP_TAG="hop-${name_safe:-$(date +%s)}"
-                    HOP_JSON=$(link_to_outbound_json "$HOP_TAG")
 
-                elif [[ "$hop_src" == "2" ]]; then
-                    echo -e "  从已有出站选择跳板:"
-                    jq -r '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block")] | keys[] as $i | "  \($i+1)) [\(.[$i].type)] \(.[$i].tag)"' "$CONFIG_FILE"
-                    local all_out_count
-                    all_out_count=$(jq '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block")] | length' "$CONFIG_FILE")
-                    read -p "  序号: " h_idx
-                    if ! validate_index "$h_idx" "$all_out_count"; then pause; continue; fi
-                    HOP_TAG=$(jq -r "[.outbounds[] | select(.type != \"direct\" and .type != \"dns\" and .type != \"block\")] | .[$(($h_idx-1))].tag" "$CONFIG_FILE")
-                    HOP_JSON=""   # 已存在，不需要追加
+                    [[ -z "$CUR_HOP_TAG" ]] && continue
 
-                elif [[ "$hop_src" == "3" ]]; then
-                    echo "  1) SS  2) Socks5  3) HTTPS"
-                    read -p "  协议: " hop_type
-                    read -p "  地址: " R_ADDR; read -p "  端口: " R_PORT
-                    HOP_TAG="hop-$(date +%s)"
-                    case $hop_type in
-                        1) read -p "  加密: " R_METHOD; read -p "  密码: " R_PASS ;;
-                        2) read -p "  用户: " R_USER;   read -p "  密码: " R_PASS ;;
-                        3) read -p "  用户: " R_USER;   read -p "  密码: " R_PASS ;;
-                    esac
-                    HOP_JSON=$(link_to_outbound_json "$HOP_TAG")
-                else
-                    echo -e "${RED}无效输入${PLAIN}"; pause; continue
+                    hop_tags+=("$CUR_HOP_TAG")
+                    hop_jsons+=("$CUR_HOP_JSON")
+                    next_tag="$CUR_HOP_TAG"   # 下一个跳板的 next 指向当前跳板
+                    echo -e "  ✔ 跳板 #$hop_num: ${GREEN}$CUR_HOP_TAG${PLAIN} ──▶ detour → ${YELLOW}$([ "${#hop_tags[@]}" -eq 1 ] && echo "$LAND_FINAL_TAG" || echo "${hop_tags[-2]}")${PLAIN}"
+                    echo ""
+                done
+
+                if [[ ${#hop_tags[@]} -eq 0 ]]; then
+                    echo -e "${RED}✘ 至少需要一个跳板节点${PLAIN}"; pause; continue
                 fi
 
-                if [[ -z "$HOP_TAG" ]]; then
-                    echo -e "${RED}跳板节点配置失败${PLAIN}"; pause; continue
-                fi
-                echo -e "  跳板: ${GREEN}$HOP_TAG${PLAIN}\n"
+                # hop_tags 最后一个是第一跳（路由规则指向它）
+                local FIRST_HOP_TAG="${hop_tags[-1]}"
 
-                # ── 步骤 4：组装并写入配置 ──────────────────────────
-                echo -e "${YELLOW}[步骤4] 正在写入配置...${PLAIN}"
+                # ── 步骤 4：写入配置 ─────────────────────────────────
+                echo -e "\n${YELLOW}[步骤4] 写入配置...${PLAIN}"
 
-                # 跳板节点挂载落地组：给跳板加 detour
-                local HOP_WITH_DETOUR=""
-                if [[ -n "$HOP_JSON" ]]; then
-                    # 新建的跳板节点，直接在 JSON 里加 detour
-                    HOP_WITH_DETOUR=$(echo "$HOP_JSON" | jq --arg d "$LAND_TAG" '. + {"detour": $d}')
-                else
-                    # 已有出站节点：用 jq 就地加 detour
-                    HOP_WITH_DETOUR=""
-                fi
+                # 打印最终链路预览
+                echo -ne "  链路预览: ${BLUE}$LOCAL_TAG${PLAIN}"
+                # 倒序输出跳板（从入站近→落地近）
+                for (( i=${#hop_tags[@]}-1; i>=0; i-- )); do
+                    echo -ne " ──▶ ${GREEN}${hop_tags[$i]}${PLAIN}"
+                done
+                echo -e " ──▶ ${YELLOW}$LAND_FINAL_TAG${PLAIN} ──▶ 互联网"
 
-                # 路由规则：入站 -> 跳板 tag
-                NEW_RULE_JSON=$(jq -n --arg itag "$LOCAL_TAG" --arg otag "$HOP_TAG" \
-                    '{"inbound": [$itag], "outbound": $otag}')
+                # 路由规则：入站 → 第一跳
+                NEW_RULE_JSON=$(jq -n \
+                    --arg itag "$LOCAL_TAG" --arg otag "$FIRST_HOP_TAG" \
+                    '{"inbound":[$itag],"outbound":$otag}')
 
                 make_tmp
-                jq \
-                    --argjson hopJson "${HOP_WITH_DETOUR:-null}" \
-                    --argjson landNodes "${LAND_NODES_JSON:-null}" \
-                    --argjson newRule "$NEW_RULE_JSON" \
-                    --arg hopTag "$HOP_TAG" \
-                    --arg landTag "$LAND_TAG" \
-                    --arg itag "$LOCAL_TAG" \
-                    '
-                    # 1. 如果跳板是新节点，追加；否则在已有节点上加 detour
-                    (if $hopJson != null then
-                        .outbounds += [$hopJson]
+                # 用 python3 把 bash 数组转成 jq 输入，避免长串参数
+                # 思路：
+                #   1. 先追加落地组（如果是新组）
+                #   2. 逐跳：新节点追加；已有节点就地设 detour
+                #   3. 更新路由规则
+                local TMP_CFG="$_TMP_JSON"
+                cp "$CONFIG_FILE" "$TMP_CFG"
+
+                # 追加落地组
+                if [[ -n "$LAND_NEW_JSON" ]]; then
+                    jq --argjson obj "$LAND_NEW_JSON" '.outbounds += [$obj]' \
+                        "$TMP_CFG" > "${TMP_CFG}.tmp" && mv "${TMP_CFG}.tmp" "$TMP_CFG"
+                fi
+
+                # 逐跳写入（按数组顺序：靠近落地→靠近入站）
+                for (( i=0; i<${#hop_tags[@]}; i++ )); do
+                    local htag="${hop_tags[$i]}"
+                    local hjson="${hop_jsons[$i]}"
+                    # next detour：i=0 指向落地，i>0 指向 hop_tags[i-1]
+                    local hdetour
+                    if [[ $i -eq 0 ]]; then
+                        hdetour="$LAND_FINAL_TAG"
                     else
-                        .outbounds |= map(if .tag == $hopTag then . + {"detour": $landTag} else . end)
-                    end)
-                    # 2. 追加落地组（如果有新组需要插入）
-                    | (if $landNodes != null then .outbounds += $landNodes else . end)
-                    # 3. 更新路由规则（替换该入站已有规则，插入新规则到最前）
-                    | .route.rules = (
-                        [$newRule] +
-                        [.route.rules[] | select(
+                        hdetour="${hop_tags[$((i-1))]}"
+                    fi
+
+                    if [[ -n "$hjson" ]]; then
+                        # 新节点（JSON 里已含 detour），直接追加
+                        jq --argjson obj "$hjson" '.outbounds += [$obj]' \
+                            "$TMP_CFG" > "${TMP_CFG}.tmp" && mv "${TMP_CFG}.tmp" "$TMP_CFG"
+                    else
+                        # 已有节点：就地覆写 detour，防止保留旧 detour 造成环路
+                        jq --arg tag "$htag" --arg det "$hdetour" \
+                            '(.outbounds[] | select(.tag == $tag)) |= (. + {"detour":$det})' \
+                            "$TMP_CFG" > "${TMP_CFG}.tmp" && mv "${TMP_CFG}.tmp" "$TMP_CFG"
+                    fi
+                done
+
+                # 更新路由规则（替换该入站旧规则）
+                jq --argjson rule "$NEW_RULE_JSON" --arg itag "$LOCAL_TAG" \
+                    '.route.rules = (
+                        [$rule] + [.route.rules[] | select(
                             if .inbound then
-                                (if .inbound | type == "array"
-                                 then .inbound | contains([$itag]) | not
-                                 else .inbound != $itag end)
+                                if (.inbound | type) == "array"
+                                then (.inbound | contains([$itag])) | not
+                                else .inbound != $itag end
                             else true end
                         )]
-                    )
-                    ' "$CONFIG_FILE" > "$_TMP_JSON"
+                    )' "$TMP_CFG" > "${TMP_CFG}.tmp" && mv "${TMP_CFG}.tmp" "$TMP_CFG"
 
-                if save_and_restart; then
-                    echo -e "\n${GREEN}✔ 链式配置成功！${PLAIN}"
-                    echo -e "  链路: ${BLUE}$LOCAL_TAG${PLAIN} ──▶ ${GREEN}$HOP_TAG${PLAIN} ──▶ ${YELLOW}$LAND_TAG${PLAIN} ──▶ 互联网"
+                if $SB_BIN check -c "$TMP_CFG" > /dev/null 2>&1; then
+                    mv "$TMP_CFG" "$CONFIG_FILE"
+                    _TMP_JSON=""
+                    systemctl restart sing-box
+                    echo -e "\n${GREEN}✔ 链式配置成功，共 ${#hop_tags[@]} 跳！${PLAIN}"
                     if [[ "$land_mode" == "B" ]]; then
                         echo -e "  落地模式: ${CYAN}自动优选 (${#member_tags_arr[@]} 节点)${PLAIN}"
                     elif [[ "$land_mode" == "C" ]]; then
@@ -1395,12 +1455,79 @@ manage_routing() {
                     fi
                 else
                     echo -e "${RED}✖ 配置校验失败，已回滚${PLAIN}"
+                    echo -e "${YELLOW}详细错误:${PLAIN}"
+                    $SB_BIN check -c "$TMP_CFG" 2>&1 | head -20
+                    rm -f "$TMP_CFG" "${TMP_CFG}.tmp"
+                    _TMP_JSON=""
                 fi
                 pause ;;
 
             5)
-                echo -e "\n${YELLOW}--- 当前活跃转发链路 ---${PLAIN}"
-                jq -r '.route.rules[] | select(.inbound != null) | "入站: \(.inbound)  ==>  出口: \(.outbound)"' "$CONFIG_FILE"
+                # 增强版链路可视化：追踪 detour 链，展示完整路径
+                clear
+                echo -e "${YELLOW}━━━ 当前链式链路 ━━━${PLAIN}\n"
+
+                local rules_count
+                rules_count=$(jq '[.route.rules[] | select(.inbound != null)] | length' "$CONFIG_FILE")
+                if [[ "$rules_count" -eq 0 ]]; then
+                    echo -e "  暂无链式规则"
+                    pause; continue
+                fi
+
+                # 对每条有入站的路由规则，追踪完整 detour 链
+                jq -r '.route.rules[] | select(.inbound != null) |
+                    "\(.inbound | if type=="array" then join(",") else . end)|\(.outbound)"' \
+                    "$CONFIG_FILE" | while IFS='|' read -r inbound first_out; do
+
+                    echo -e "  ${BLUE}入站: $inbound${PLAIN}"
+                    echo -ne "  路径: ${GREEN}$first_out${PLAIN}"
+
+                    local cur="$first_out"
+                    local visited="$first_out"
+                    local depth=0
+
+                    while true; do
+                        (( depth++ ))
+                        [[ $depth -gt 20 ]] && echo -ne " ${RED}[检测到可能的循环!]${PLAIN}" && break
+
+                        local next
+                        next=$(jq -r --arg t "$cur" \
+                            '.outbounds[] | select(.tag == $t) | .detour // ""' \
+                            "$CONFIG_FILE" 2>/dev/null | head -1)
+
+                        [[ -z "$next" ]] && break
+
+                        # 检测循环
+                        if echo "$visited" | grep -qF "$next"; then
+                            echo -ne " ──▶ ${RED}[$next ← 循环!]${PLAIN}"
+                            break
+                        fi
+                        visited="$visited $next"
+
+                        # 判断节点类型显示不同颜色
+                        local node_type
+                        node_type=$(jq -r --arg t "$next" \
+                            '.outbounds[] | select(.tag == $t) | .type' \
+                            "$CONFIG_FILE" 2>/dev/null | head -1)
+
+                        case "$node_type" in
+                            urltest)  echo -ne " ──▶ ${CYAN}$next[优选组]${PLAIN}" ;;
+                            selector) echo -ne " ──▶ ${PURPLE}$next[轮询组]${PLAIN}" ;;
+                            "")       echo -ne " ──▶ ${YELLOW}互联网${PLAIN}" ;;
+                            *)        echo -ne " ──▶ ${GREEN}$next${PLAIN}" ;;
+                        esac
+                        cur="$next"
+                    done
+
+                    # 展开组成员
+                    local members
+                    members=$(jq -r --arg t "$cur" \
+                        '.outbounds[] | select(.tag == $t) | .outbounds // [] | join(", ")' \
+                        "$CONFIG_FILE" 2>/dev/null | head -1)
+                    [[ -n "$members" ]] && echo -ne "\n  成员: ${YELLOW}$members${PLAIN}"
+
+                    echo -e "\n"
+                done
                 pause ;;
 
             6)
