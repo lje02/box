@@ -722,51 +722,304 @@ edit_node() {
 }
 
 
+# ==============================================================
+# parse_proxy_link — 全协议解析
+#
+# 支持: ss:// socks5:// https:// vless:// trojan:// hysteria2:// tuic://
+#
+# 输出全局变量:
+#   hop_type  — 1=SS 2=Socks5 3=HTTP 4=VLESS 5=Trojan 6=Hysteria2 7=TUIC
+#   R_ADDR    — 服务器地址
+#   R_PORT    — 端口
+#   R_PASS    — 密码 / UUID（ss为密码，vless/tuic为UUID）
+#   R_USER    — 用户名（socks5/http用）
+#   R_METHOD  — 加密方式（ss专用）
+#   R_UUID    — UUID（vless / tuic 专用）
+#   R_SNI     — TLS server_name
+#   R_FLOW    — vless flow（如 xtls-rprx-vision）
+#   R_PBK     — reality public_key
+#   R_SID     — reality short_id
+#   R_ALPN    — ALPN（tuic 用，逗号分隔字符串）
+#   R_TLS_INSECURE — 0/1
+#   R_TRANSPORT    — 传输层类型 (ws/grpc/tcp 等)
+#   R_WS_PATH      — WebSocket path
+#   R_NAME         — 节点备注（# 后的内容）
+# ==============================================================
 parse_proxy_link() {
     local link=$1
-    local content user_info server_info
-    
-    R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""
+    local content qs host_port user_info
 
+    # 清空所有输出变量
+    hop_type="" R_ADDR="" R_PORT="" R_PASS="" R_USER="" R_METHOD=""
+    R_UUID="" R_SNI="" R_FLOW="" R_PBK="" R_SID="" R_ALPN=""
+    R_TLS_INSECURE="0" R_TRANSPORT="tcp" R_WS_PATH="" R_NAME=""
+
+    # 提取 # 后的备注
+    R_NAME=$(echo "$link" | grep -oP '(?<=#)[^#]*$' | python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" 2>/dev/null || echo "")
+
+    # 工具函数：URL 解码
+    _urldecode() { python3 -c "import sys,urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))" 2>/dev/null || echo "$1"; }
+
+    # 工具函数：从查询串取值  _qs_get <qs> <key>
+    _qs_get() { echo "$1" | tr '&' '\n' | grep -i "^${2}=" | head -1 | cut -d= -f2- | _urldecode; }
+
+    # ---------- Shadowsocks ----------
     if [[ "$link" =~ ^ss:// ]]; then
         hop_type=1
-        content=$(echo "${link#ss://}" | cut -d'#' -f1)
+        content=$(echo "${link}" | sed 's|ss://||' | cut -d'#' -f1)
         if [[ "$content" == *"@"* ]]; then
-            local user_info_b64=$(echo "$content" | cut -d'@' -f1)
-            server_info=$(echo "$content" | cut -d'@' -f2)
-            user_info=$(echo "$user_info_b64" | tr '_-' '/+' | awk '{printf "%s%s", $0, substr("===", 1, (4-length($0)%4)%4)}' | base64 -d 2>/dev/null)
-            R_METHOD=$(echo "$user_info" | cut -d':' -f1)
-            R_PASS=$(echo "$user_info" | cut -d':' -f2)
-            R_ADDR=$(echo "$server_info" | cut -d':' -f1)
-            R_PORT=$(echo "$server_info" | cut -d':' -f2 | cut -d'/' -f1)
+            local b64_part=$(echo "$content" | cut -d'@' -f1)
+            host_port=$(echo "$content" | cut -d'@' -f2 | cut -d'/' -f1 | cut -d'?' -f1)
+            local decoded=$(echo "$b64_part" | tr '_-' '/+' | \
+                awk '{l=length($0)%4; if(l==2) $0=$0"=="; else if(l==3) $0=$0"="; print}' | \
+                base64 -d 2>/dev/null)
+            R_METHOD=$(echo "$decoded" | cut -d':' -f1)
+            R_PASS=$(echo "$decoded"   | cut -d':' -f2-)
         else
-            local decoded=$(echo "$content" | tr '_-' '/+' | awk '{printf "%s%s", $0, substr("===", 1, (4-length($0)%4)%4)}' | base64 -d 2>/dev/null)
+            local decoded=$(echo "$content" | tr '_-' '/+' | \
+                awk '{l=length($0)%4; if(l==2) $0=$0"=="; else if(l==3) $0=$0"="; print}' | \
+                base64 -d 2>/dev/null)
             if [[ "$decoded" =~ ^(.+):(.+)@(.+):([0-9]+) ]]; then
                 R_METHOD="${BASH_REMATCH[1]}"; R_PASS="${BASH_REMATCH[2]}"
-                R_ADDR="${BASH_REMATCH[3]}"; R_PORT="${BASH_REMATCH[4]}"
+                host_port="${BASH_REMATCH[3]}:${BASH_REMATCH[4]}"
             fi
         fi
-    elif [[ "$link" =~ ^socks5:// ]]; then
+        R_ADDR=$(echo "$host_port" | cut -d':' -f1)
+        R_PORT=$(echo "$host_port" | cut -d':' -f2)
+
+    # ---------- Socks5 ----------
+    elif [[ "$link" =~ ^socks5?:// ]]; then
         hop_type=2
-        content=${link#socks5://}; content=$(echo "$content" | cut -d'#' -f1)
+        content=$(echo "$link" | sed 's|socks5\?://||' | cut -d'#' -f1)
         if [[ "$content" == *"@"* ]]; then
-            user_info=$(echo "$content" | cut -d'@' -f1); server_info=$(echo "$content" | cut -d'@' -f2)
-            R_USER=$(echo "$user_info" | cut -d':' -f1); R_PASS=$(echo "$user_info" | cut -d':' -f2)
-            R_ADDR=$(echo "$server_info" | cut -d':' -f1); R_PORT=$(echo "$server_info" | cut -d':' -f2)
+            user_info=$(echo "$content" | cut -d'@' -f1)
+            host_port=$(echo "$content" | cut -d'@' -f2 | cut -d'/' -f1 | cut -d'?' -f1)
+            R_USER=$(echo "$user_info" | cut -d':' -f1)
+            R_PASS=$(echo "$user_info" | cut -d':' -f2-)
         else
-            R_ADDR=$(echo "$content" | cut -d':' -f1); R_PORT=$(echo "$content" | cut -d':' -f2)
+            host_port=$(echo "$content" | cut -d'/' -f1 | cut -d'?' -f1)
         fi
+        R_ADDR=$(echo "$host_port" | cut -d':' -f1)
+        R_PORT=$(echo "$host_port" | cut -d':' -f2)
+
+    # ---------- HTTPS 代理 ----------
     elif [[ "$link" =~ ^https:// ]]; then
         hop_type=3
-        content=${link#https://}; content=$(echo "$content" | cut -d'#' -f1)
+        content=$(echo "$link" | sed 's|https://||' | cut -d'#' -f1)
         if [[ "$content" == *"@"* ]]; then
-            user_info=$(echo "$content" | cut -d'@' -f1); server_info=$(echo "$content" | cut -d'@' -f2)
-            R_USER=$(echo "$user_info" | cut -d':' -f1); R_PASS=$(echo "$user_info" | cut -d':' -f2)
-            R_ADDR=$(echo "$server_info" | cut -d':' -f1); R_PORT=$(echo "$server_info" | cut -d':' -f2)
+            user_info=$(echo "$content" | cut -d'@' -f1)
+            host_port=$(echo "$content" | cut -d'@' -f2 | cut -d'/' -f1 | cut -d'?' -f1)
+            R_USER=$(echo "$user_info" | cut -d':' -f1)
+            R_PASS=$(echo "$user_info" | cut -d':' -f2-)
         else
-            R_ADDR=$(echo "$content" | cut -d':' -f1); R_PORT=$(echo "$content" | cut -d':' -f2)
+            host_port=$(echo "$content" | cut -d'/' -f1 | cut -d'?' -f1)
         fi
+        R_ADDR=$(echo "$host_port" | cut -d':' -f1)
+        R_PORT=$(echo "$host_port" | cut -d':' -f2)
+
+    # ---------- VLESS ----------
+    elif [[ "$link" =~ ^vless:// ]]; then
+        hop_type=4
+        content=$(echo "$link" | sed 's|vless://||' | cut -d'#' -f1)
+        R_UUID=$(echo "$content" | cut -d'@' -f1)
+        host_port=$(echo "$content" | cut -d'@' -f2 | cut -d'?' -f1)
+        qs=$(echo "$content" | grep -o '?.*' | cut -c2-)
+        # IPv6 地址处理  [::1]:port
+        if [[ "$host_port" =~ ^\[([^\]]+)\]:([0-9]+)$ ]]; then
+            R_ADDR="${BASH_REMATCH[1]}"; R_PORT="${BASH_REMATCH[2]}"
+        else
+            R_ADDR=$(echo "$host_port" | cut -d':' -f1)
+            R_PORT=$(echo "$host_port" | cut -d':' -f2)
+        fi
+        R_SNI=$(_qs_get "$qs" "sni")
+        [[ -z "$R_SNI" ]] && R_SNI=$(_qs_get "$qs" "host")
+        R_FLOW=$(_qs_get "$qs" "flow")
+        R_PBK=$(_qs_get "$qs" "pbk")
+        R_SID=$(_qs_get "$qs" "sid")
+        R_TRANSPORT=$(_qs_get "$qs" "type"); R_TRANSPORT=${R_TRANSPORT:-tcp}
+        R_WS_PATH=$(_qs_get "$qs" "path")
+        local ins=$(_qs_get "$qs" "allowInsecure")
+        [[ "$ins" == "1" || "$ins" == "true" ]] && R_TLS_INSECURE="1"
+        R_PASS="$R_UUID"   # 统一 R_PASS 以兼容路由模块
+
+    # ---------- Trojan ----------
+    elif [[ "$link" =~ ^trojan:// ]]; then
+        hop_type=5
+        content=$(echo "$link" | sed 's|trojan://||' | cut -d'#' -f1)
+        R_PASS=$(echo "$content" | cut -d'@' -f1)
+        host_port=$(echo "$content" | cut -d'@' -f2 | cut -d'?' -f1)
+        qs=$(echo "$content" | grep -o '?.*' | cut -c2-)
+        if [[ "$host_port" =~ ^\[([^\]]+)\]:([0-9]+)$ ]]; then
+            R_ADDR="${BASH_REMATCH[1]}"; R_PORT="${BASH_REMATCH[2]}"
+        else
+            R_ADDR=$(echo "$host_port" | cut -d':' -f1)
+            R_PORT=$(echo "$host_port" | cut -d':' -f2)
+        fi
+        R_SNI=$(_qs_get "$qs" "sni")
+        [[ -z "$R_SNI" ]] && R_SNI=$(_qs_get "$qs" "host")
+        R_TRANSPORT=$(_qs_get "$qs" "type"); R_TRANSPORT=${R_TRANSPORT:-tcp}
+        R_WS_PATH=$(_qs_get "$qs" "path")
+        local ins=$(_qs_get "$qs" "allowInsecure")
+        [[ "$ins" == "1" || "$ins" == "true" ]] && R_TLS_INSECURE="1"
+
+    # ---------- Hysteria2 ----------
+    elif [[ "$link" =~ ^(hysteria2|hy2):// ]]; then
+        hop_type=6
+        content=$(echo "$link" | sed 's|hysteria2://||;s|hy2://||' | cut -d'#' -f1)
+        if [[ "$content" == *"@"* ]]; then
+            R_PASS=$(echo "$content" | cut -d'@' -f1)
+            host_port=$(echo "$content" | cut -d'@' -f2 | cut -d'?' -f1)
+        else
+            host_port=$(echo "$content" | cut -d'?' -f1)
+        fi
+        qs=$(echo "$content" | grep -o '?.*' | cut -c2-)
+        if [[ "$host_port" =~ ^\[([^\]]+)\]:([0-9]+)$ ]]; then
+            R_ADDR="${BASH_REMATCH[1]}"; R_PORT="${BASH_REMATCH[2]}"
+        else
+            R_ADDR=$(echo "$host_port" | cut -d':' -f1)
+            R_PORT=$(echo "$host_port" | cut -d':' -f2)
+        fi
+        R_SNI=$(_qs_get "$qs" "sni")
+        local ins=$(_qs_get "$qs" "insecure")
+        [[ "$ins" == "1" || "$ins" == "true" ]] && R_TLS_INSECURE="1"
+
+    # ---------- TUIC ----------
+    elif [[ "$link" =~ ^tuic:// ]]; then
+        hop_type=7
+        content=$(echo "$link" | sed 's|tuic://||' | cut -d'#' -f1)
+        # tuic://UUID:PASSWORD@host:port?...
+        local auth_part=$(echo "$content" | cut -d'@' -f1)
+        host_port=$(echo "$content" | cut -d'@' -f2 | cut -d'?' -f1)
+        qs=$(echo "$content" | grep -o '?.*' | cut -c2-)
+        R_UUID=$(echo "$auth_part" | cut -d':' -f1)
+        R_PASS=$(echo "$auth_part" | cut -d':' -f2-)
+        if [[ "$host_port" =~ ^\[([^\]]+)\]:([0-9]+)$ ]]; then
+            R_ADDR="${BASH_REMATCH[1]}"; R_PORT="${BASH_REMATCH[2]}"
+        else
+            R_ADDR=$(echo "$host_port" | cut -d':' -f1)
+            R_PORT=$(echo "$host_port" | cut -d':' -f2)
+        fi
+        R_SNI=$(_qs_get "$qs" "sni")
+        R_ALPN=$(_qs_get "$qs" "alpn")
+        local ins=$(_qs_get "$qs" "allow_insecure")
+        [[ "$ins" == "1" || "$ins" == "true" ]] && R_TLS_INSECURE="1"
     fi
+}
+
+# ==============================================================
+# link_to_outbound_json — 把 parse_proxy_link 的结果转为出站 JSON
+# 用法: link_to_outbound_json <tag>
+# 成功输出 JSON 字符串到 stdout，失败输出空
+# ==============================================================
+link_to_outbound_json() {
+    local tag=${1:-"node-$(date +%s)"}
+    local json=""
+
+    case "$hop_type" in
+        1) # Shadowsocks
+            json=$(jq -n \
+                --arg t "$tag" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                --arg m "$R_METHOD" --arg pw "$R_PASS" \
+                '{"type":"shadowsocks","tag":$t,"server":$s,"server_port":($p|tonumber),"method":$m,"password":$pw}')
+            ;;
+        2) # Socks5
+            json=$(jq -n \
+                --arg t "$tag" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                --arg u "$R_USER" --arg pw "$R_PASS" \
+                '{"type":"socks","tag":$t,"server":$s,"server_port":($p|tonumber),"version":"5"}
+                 + (if $u != "" then {"username":$u,"password":$pw} else {} end)')
+            ;;
+        3) # HTTP/HTTPS 代理
+            json=$(jq -n \
+                --arg t "$tag" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                --arg u "$R_USER" --arg pw "$R_PASS" \
+                '{"type":"http","tag":$t,"server":$s,"server_port":($p|tonumber),"tls":{"enabled":true}}
+                 + (if $u != "" then {"username":$u,"password":$pw} else {} end)')
+            ;;
+        4) # VLESS
+            local tls_obj
+            if [[ -n "$R_PBK" ]]; then
+                # Reality
+                tls_obj=$(jq -n \
+                    --arg sni "$R_SNI" --arg pbk "$R_PBK" --arg sid "$R_SID" \
+                    --argjson ins "$R_TLS_INSECURE" \
+                    '{"enabled":true,"server_name":$sni,"insecure":($ins=="1"),
+                      "reality":{"enabled":true,"public_key":$pbk,"short_id":$sid}}')
+            else
+                tls_obj=$(jq -n \
+                    --arg sni "$R_SNI" --argjson ins "$([ "$R_TLS_INSECURE" = "1" ] && echo true || echo false)" \
+                    '{"enabled":true,"server_name":$sni,"insecure":$ins}')
+            fi
+            local transport_obj="{}"
+            if [[ "$R_TRANSPORT" == "ws" ]]; then
+                transport_obj=$(jq -n --arg p "$R_WS_PATH" '{"type":"ws","path":$p}')
+            elif [[ "$R_TRANSPORT" == "grpc" ]]; then
+                transport_obj=$(jq -n --arg p "$R_WS_PATH" '{"type":"grpc","service_name":$p}')
+            fi
+            local flow_part="{}"
+            [[ -n "$R_FLOW" ]] && flow_part=$(jq -n --arg f "$R_FLOW" '{"flow":$f}')
+            json=$(jq -n \
+                --arg t "$tag" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                --arg uuid "$R_UUID" \
+                --argjson tls "$tls_obj" \
+                --argjson tr "$transport_obj" \
+                --argjson fl "$flow_part" \
+                '{"type":"vless","tag":$t,"server":$s,"server_port":($p|tonumber),
+                  "uuid":$uuid,"tls":$tls}
+                 + (if $tr != {} then {"transport":$tr} else {} end)
+                 + $fl')
+            ;;
+        5) # Trojan
+            local tls_obj
+            tls_obj=$(jq -n \
+                --arg sni "$R_SNI" --argjson ins "$([ "$R_TLS_INSECURE" = "1" ] && echo true || echo false)" \
+                '{"enabled":true,"server_name":$sni,"insecure":$ins}')
+            local transport_obj="{}"
+            if [[ "$R_TRANSPORT" == "ws" ]]; then
+                transport_obj=$(jq -n --arg p "$R_WS_PATH" '{"type":"ws","path":$p}')
+            fi
+            json=$(jq -n \
+                --arg t "$tag" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                --arg pw "$R_PASS" \
+                --argjson tls "$tls_obj" \
+                --argjson tr "$transport_obj" \
+                '{"type":"trojan","tag":$t,"server":$s,"server_port":($p|tonumber),
+                  "password":$pw,"tls":$tls}
+                 + (if $tr != {} then {"transport":$tr} else {} end)')
+            ;;
+        6) # Hysteria2
+            local tls_obj
+            tls_obj=$(jq -n \
+                --arg sni "$R_SNI" --argjson ins "$([ "$R_TLS_INSECURE" = "1" ] && echo true || echo false)" \
+                '{"enabled":true,"server_name":$sni,"insecure":$ins}')
+            json=$(jq -n \
+                --arg t "$tag" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                --arg pw "$R_PASS" --argjson tls "$tls_obj" \
+                '{"type":"hysteria2","tag":$t,"server":$s,"server_port":($p|tonumber),
+                  "password":$pw,"tls":$tls}')
+            ;;
+        7) # TUIC
+            local alpn_json="[]"
+            [[ -n "$R_ALPN" ]] && alpn_json=$(echo "$R_ALPN" | tr ',' '\n' | jq -R . | jq -s .)
+            local tls_obj
+            tls_obj=$(jq -n \
+                --arg sni "$R_SNI" \
+                --argjson alpn "$alpn_json" \
+                --argjson ins "$([ "$R_TLS_INSECURE" = "1" ] && echo true || echo false)" \
+                '{"enabled":true,"server_name":$sni,"insecure":$ins,"alpn":$alpn}')
+            json=$(jq -n \
+                --arg t "$tag" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                --arg uuid "$R_UUID" --arg pw "$R_PASS" \
+                --argjson tls "$tls_obj" \
+                '{"type":"tuic","tag":$t,"server":$s,"server_port":($p|tonumber),
+                  "uuid":$uuid,"password":$pw,"congestion_control":"bbr","tls":$tls}')
+            ;;
+        *)
+            echo ""
+            return 1
+            ;;
+    esac
+    echo "$json"
 }
 
 manage_routing() {
@@ -904,90 +1157,244 @@ manage_routing() {
                 pause ;;
 
             4)
-                echo -e "\n${CYAN}[步骤1] 选择流量进入的入站 (Inbound):${PLAIN}"
+                # =====================================================
+                # 链式代理：入站 -> 跳板(第一跳) -> 落地组(多节点) -> 互联网
+                #
+                # 落地支持三种模式：
+                #   A. 单落地  — 直接指定一个已有出站
+                #   B. 自动优选 — urltest 组，自动选延迟最低节点
+                #   C. 轮询    — selector 组，手动或负载均衡
+                # =====================================================
+                clear
+                echo -e "${YELLOW}--- 链式代理配置 ---${PLAIN}"
+                echo -e "${CYAN}架构: 入站 ──▶ 跳板(本脚本添加) ──▶ 落地节点组 ──▶ 互联网${PLAIN}\n"
+
+                # ── 步骤 1：选择入站 ──────────────────────────────────
+                echo -e "${YELLOW}[步骤1] 选择流量来源入站:${PLAIN}"
                 local in_count=$(jq '.inbounds | length' "$CONFIG_FILE")
-                jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
+                [[ "$in_count" -eq 0 ]] && echo -e "${RED}无入站配置，请先添加节点${PLAIN}" && pause && continue
+                jq -r '.inbounds | keys[] as $i | "  \($i+1)) \(.[$i].tag)  [\(.[$i].type):\(.[$i].listen_port)]"' "$CONFIG_FILE"
                 read -p "选择序号: " idx
                 [[ -z "$idx" ]] && continue
-                # [修复2] 越界保护
                 if ! validate_index "$idx" "$in_count"; then pause; continue; fi
                 LOCAL_TAG=$(jq -r ".inbounds[$((idx-1))].tag" "$CONFIG_FILE")
-                
-                CURRENT_OUTBOUND=$(jq -r --arg itag "$LOCAL_TAG" '
-                    .route.rules[] | 
-                    select(if .inbound | type == "array" then .inbound | contains([$itag]) else .inbound == $itag end) | 
-                    .outbound' "$CONFIG_FILE" | head -n 1)
+                echo -e "  已选: ${GREEN}$LOCAL_TAG${PLAIN}\n"
 
-                echo -e "\n${CYAN}[步骤2] 配置出口节点 (Outbound):${PLAIN}"
-                read -p "粘贴链接 (回车手动输入): " RAW_LINK
-                
-                R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""
+                # ── 步骤 2：配置落地节点组 ───────────────────────────
+                echo -e "${YELLOW}[步骤2] 配置落地节点 (出口):${PLAIN}"
 
-                if [[ -n "$RAW_LINK" ]]; then
+                # 列出所有可用出站（排除内置的 direct/dns/block）
+                local out_count
+                out_count=$(jq '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block" and .type != "urltest" and .type != "selector")] | length' "$CONFIG_FILE")
+
+                if [[ "$out_count" -eq 0 ]]; then
+                    echo -e "${RED}✘ 没有可用的出站节点，请先在「添加出站节点」中导入落地节点${PLAIN}"
+                    pause; continue
+                fi
+
+                echo -e "  可用出站节点:"
+                jq -r '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block" and .type != "urltest" and .type != "selector")] | keys[] as $i | "  \($i+1)) [\(.[$i].type)] \(.[$i].tag)  \(.[$i].server // ""):\(.[$i].server_port // "")"' "$CONFIG_FILE"
+
+                echo -e "\n  选择模式:"
+                echo "  A) 单落地  — 选一个节点直接用"
+                echo "  B) 自动优选 — 选多个节点，自动选延迟最低的"
+                echo "  C) 轮询    — 选多个节点，手动切换或负载分流"
+                read -p "  模式 [A/B/C]: " land_mode
+                land_mode=$(echo "$land_mode" | tr 'abc' 'ABC')
+
+                local LAND_TAG=""        # 落地组最终 tag（写入跳板 detour）
+                local LAND_NODES_JSON="" # 需要追加的新出站 JSON 数组（仅在生成新组时有值）
+
+                # ── 从出站列表取 tag（只含非内置节点）
+                _get_land_tag_by_idx() {
+                    jq -r "[.outbounds[] | select(.type != \"direct\" and .type != \"dns\" and .type != \"block\" and .type != \"urltest\" and .type != \"selector\")] | .[$(($1-1))].tag" "$CONFIG_FILE"
+                }
+
+                if [[ "$land_mode" == "A" ]]; then
+                    # 单落地
+                    read -p "  选择序号: " l_idx
+                    if ! validate_index "$l_idx" "$out_count"; then pause; continue; fi
+                    LAND_TAG=$(_get_land_tag_by_idx "$l_idx")
+                    echo -e "  落地节点: ${GREEN}$LAND_TAG${PLAIN}"
+
+                elif [[ "$land_mode" == "B" || "$land_mode" == "C" ]]; then
+                    # 多落地：选成员
+                    read -p "  选择序号 (逗号隔开，如 1,3,5): " m_idxs
+                    [[ -z "$m_idxs" ]] && continue
+
+                    # 收集成员 tag 并校验
+                    local member_tags_arr=()
+                    local bad_idx=0
+                    while IFS= read -r mi; do
+                        mi=$(echo "$mi" | tr -d ' ')
+                        if ! validate_index "$mi" "$out_count" 2>/dev/null; then
+                            echo -e "${RED}  序号 $mi 超出范围${PLAIN}"; bad_idx=1; break
+                        fi
+                        member_tags_arr+=( "$(_get_land_tag_by_idx "$mi")" )
+                    done < <(echo "$m_idxs" | tr ',' '\n')
+                    [[ "$bad_idx" -eq 1 ]] && pause && continue
+
+                    if [[ ${#member_tags_arr[@]} -lt 2 ]]; then
+                        echo -e "${RED}  多落地模式至少选 2 个节点${PLAIN}"; pause; continue
+                    fi
+
+                    # 把 bash 数组转成 jq 能用的 JSON 数组
+                    local MEMBER_JSON
+                    MEMBER_JSON=$(printf '%s\n' "${member_tags_arr[@]}" | jq -R . | jq -s .)
+
+                    LAND_TAG="land-group-$(date +%s)"
+
+                    if [[ "$land_mode" == "B" ]]; then
+                        # 自动优选 urltest
+                        read -p "  测速 URL (回车用默认 generate_204): " test_url
+                        test_url=${test_url:-"https://www.gstatic.com/generate_204"}
+                        read -p "  测速间隔 (回车默认 3m): " test_interval
+                        test_interval=${test_interval:-"3m0s"}
+                        read -p "  容差 ms (回车默认 50，在最优延迟+50ms内都可切换): " tolerance
+                        tolerance=${tolerance:-50}
+
+                        LAND_NODES_JSON=$(jq -n \
+                            --arg t "$LAND_TAG" \
+                            --argjson m "$MEMBER_JSON" \
+                            --arg url "$test_url" \
+                            --arg iv "$test_interval" \
+                            --argjson tol "$tolerance" \
+                            '[{
+                                "type": "urltest",
+                                "tag": $t,
+                                "outbounds": $m,
+                                "url": $url,
+                                "interval": $iv,
+                                "tolerance": $tol
+                            }]')
+                        echo -e "  已创建自动优选组: ${GREEN}$LAND_TAG${PLAIN} (${#member_tags_arr[@]} 个落地节点)"
+
+                    else
+                        # 轮询 selector
+                        echo -e "  轮询组说明: 默认使用第一个节点，可在客户端或 API 手动切换"
+                        LAND_NODES_JSON=$(jq -n \
+                            --arg t "$LAND_TAG" \
+                            --argjson m "$MEMBER_JSON" \
+                            '[{
+                                "type": "selector",
+                                "tag": $t,
+                                "outbounds": $m,
+                                "default": ($m[0])
+                            }]')
+                        echo -e "  已创建轮询选择组: ${GREEN}$LAND_TAG${PLAIN} (${#member_tags_arr[@]} 个落地节点)"
+                    fi
+                else
+                    echo -e "${RED}无效输入${PLAIN}"; pause; continue
+                fi
+
+                # ── 步骤 3：配置第一跳跳板节点 ───────────────────────
+                echo -e "\n${YELLOW}[步骤3] 配置第一跳跳板节点:${PLAIN}"
+                echo -e "  ${CYAN}提示: 跳板是流量离开本机后的第一站，落地是最终出口${PLAIN}"
+                echo "  1) 粘贴链接（全协议支持）"
+                echo "  2) 从已有出站中选择"
+                echo "  3) 手动输入"
+                read -p "  选择 [1-3]: " hop_src
+
+                local HOP_TAG=""
+                local HOP_JSON=""
+
+                if [[ "$hop_src" == "1" ]]; then
+                    read -p "  链接: " RAW_LINK
                     parse_proxy_link "$RAW_LINK"
-                fi
+                    if [[ -z "$R_ADDR" ]]; then
+                        echo -e "${RED}  解析失败${PLAIN}"; pause; continue
+                    fi
+                    local name_safe=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
+                    HOP_TAG="hop-${name_safe:-$(date +%s)}"
+                    HOP_JSON=$(link_to_outbound_json "$HOP_TAG")
 
-                if [[ -z "$R_ADDR" ]]; then
-                    echo -e "\n${YELLOW}>> 手动输入模式:${PLAIN}"
-                    echo "1) Shadowsocks  2) Socks5  3) HTTP/HTTPS"
-                    read -p "协议选择: " hop_type
+                elif [[ "$hop_src" == "2" ]]; then
+                    echo -e "  从已有出站选择跳板:"
+                    jq -r '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block")] | keys[] as $i | "  \($i+1)) [\(.[$i].type)] \(.[$i].tag)"' "$CONFIG_FILE"
+                    local all_out_count
+                    all_out_count=$(jq '[.outbounds[] | select(.type != "direct" and .type != "dns" and .type != "block")] | length' "$CONFIG_FILE")
+                    read -p "  序号: " h_idx
+                    if ! validate_index "$h_idx" "$all_out_count"; then pause; continue; fi
+                    HOP_TAG=$(jq -r "[.outbounds[] | select(.type != \"direct\" and .type != \"dns\" and .type != \"block\")] | .[$(($h_idx-1))].tag" "$CONFIG_FILE")
+                    HOP_JSON=""   # 已存在，不需要追加
+
+                elif [[ "$hop_src" == "3" ]]; then
+                    echo "  1) SS  2) Socks5  3) HTTPS"
+                    read -p "  协议: " hop_type
+                    read -p "  地址: " R_ADDR; read -p "  端口: " R_PORT
+                    HOP_TAG="hop-$(date +%s)"
                     case $hop_type in
-                        1) read -p "地址: " R_ADDR; read -p "端口[8388]: " R_PORT; R_PORT=${R_PORT:-8388}
-                           read -p "加密[aes-128-gcm]: " R_METHOD; R_METHOD=${R_METHOD:-aes-128-gcm}
-                           read -p "密码: " R_PASS ;;
-                        2) read -p "地址: " R_ADDR; read -p "端口[1080]: " R_PORT; R_PORT=${R_PORT:-1080}
-                           read -p "用户: " R_USER; read -p "密码: " R_PASS ;;
-                        3) read -p "地址: " R_ADDR; read -p "端口[443]: " R_PORT; R_PORT=${R_PORT:-443}
-                           read -p "用户: " R_USER; read -p "密码: " R_PASS ;;
+                        1) read -p "  加密: " R_METHOD; read -p "  密码: " R_PASS ;;
+                        2) read -p "  用户: " R_USER;   read -p "  密码: " R_PASS ;;
+                        3) read -p "  用户: " R_USER;   read -p "  密码: " R_PASS ;;
                     esac
+                    HOP_JSON=$(link_to_outbound_json "$HOP_TAG")
+                else
+                    echo -e "${RED}无效输入${PLAIN}"; pause; continue
                 fi
 
-                [[ -z "$R_ADDR" ]] && echo -e "${RED}输入无效${PLAIN}" && sleep 1 && continue
+                if [[ -z "$HOP_TAG" ]]; then
+                    echo -e "${RED}跳板节点配置失败${PLAIN}"; pause; continue
+                fi
+                echo -e "  跳板: ${GREEN}$HOP_TAG${PLAIN}\n"
 
-                SKIP_TLS="n"
-                if [[ "$hop_type" == "3" || "$RAW_LINK" =~ ^https:// ]]; then
-                    read -p "是否跳过证书验证 (Insecure)? [y/N]: " SKIP_TLS
-                    SKIP_TLS=${SKIP_TLS:-n}
+                # ── 步骤 4：组装并写入配置 ──────────────────────────
+                echo -e "${YELLOW}[步骤4] 正在写入配置...${PLAIN}"
+
+                # 跳板节点挂载落地组：给跳板加 detour
+                local HOP_WITH_DETOUR=""
+                if [[ -n "$HOP_JSON" ]]; then
+                    # 新建的跳板节点，直接在 JSON 里加 detour
+                    HOP_WITH_DETOUR=$(echo "$HOP_JSON" | jq --arg d "$LAND_TAG" '. + {"detour": $d}')
+                else
+                    # 已有出站节点：用 jq 就地加 detour
+                    HOP_WITH_DETOUR=""
                 fi
 
-                OUT_TAG="chain-$(date +%s)"
+                # 路由规则：入站 -> 跳板 tag
+                NEW_RULE_JSON=$(jq -n --arg itag "$LOCAL_TAG" --arg otag "$HOP_TAG" \
+                    '{"inbound": [$itag], "outbound": $otag}')
 
-                OUT_JSON=$(jq -n \
-                    --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" \
-                    --arg m "$R_METHOD" --arg pass "$R_PASS" --arg u "$R_USER" \
-                    --arg d "$CURRENT_OUTBOUND" --arg ht "$hop_type" --arg skip "$SKIP_TLS" \
-                    '
-                    (if $ht == "1" then
-                        {type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass}
-                    elif $ht == "2" then
-                        {type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"} + (if $u != "" then {username: $u, password: $pass} else {} end)
-                    elif $ht == "3" then
-                        {type: "http", tag: $t, server: $s, server_port: ($p|tonumber), tls: {enabled: true, insecure: ($skip == "y" or $skip == "Y")}} + (if $u != "" then {username: $u, password: $pass} else {} end)
-                    else empty end) 
-                    | if ($d != "" and $d != "null" and $d != "direct") then . + {detour: $d} else . end
-                    ' -c)
-
-                NEW_RULE_JSON=$(jq -n --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '{"inbound": [$itag], "outbound": $otag}')
-
-                echo -e "\n${CYAN}[步骤3] 正在应用配置...${PLAIN}"
                 make_tmp
-                jq --argjson newNode "$OUT_JSON" --argjson newRule "$NEW_RULE_JSON" --arg itag "$LOCAL_TAG" '
-                    .outbounds += [$newNode] |
-                    .route.rules = (
-                        [$newRule] + 
-                        [ .route.rules[] | select(
-                            if .inbound then 
-                                (if .inbound | type == "array" then .inbound | contains([$itag]) | not else .inbound != $itag end)
+                jq \
+                    --argjson hopJson "${HOP_WITH_DETOUR:-null}" \
+                    --argjson landNodes "${LAND_NODES_JSON:-null}" \
+                    --argjson newRule "$NEW_RULE_JSON" \
+                    --arg hopTag "$HOP_TAG" \
+                    --arg landTag "$LAND_TAG" \
+                    --arg itag "$LOCAL_TAG" \
+                    '
+                    # 1. 如果跳板是新节点，追加；否则在已有节点上加 detour
+                    (if $hopJson != null then
+                        .outbounds += [$hopJson]
+                    else
+                        .outbounds |= map(if .tag == $hopTag then . + {"detour": $landTag} else . end)
+                    end)
+                    # 2. 追加落地组（如果有新组需要插入）
+                    | (if $landNodes != null then .outbounds += $landNodes else . end)
+                    # 3. 更新路由规则（替换该入站已有规则，插入新规则到最前）
+                    | .route.rules = (
+                        [$newRule] +
+                        [.route.rules[] | select(
+                            if .inbound then
+                                (if .inbound | type == "array"
+                                 then .inbound | contains([$itag]) | not
+                                 else .inbound != $itag end)
                             else true end
-                        ) ]
+                        )]
                     )
-                ' "$CONFIG_FILE" > "$_TMP_JSON"
+                    ' "$CONFIG_FILE" > "$_TMP_JSON"
 
                 if save_and_restart; then
-                    echo -e "${GREEN}✔ 链式配置成功！${PLAIN}"
-                    echo -e "链路详情: ${BLUE}$LOCAL_TAG${PLAIN} -> ${GREEN}$OUT_TAG${PLAIN} -> ${YELLOW}${CURRENT_OUTBOUND:-"互联网"}${PLAIN}"
+                    echo -e "\n${GREEN}✔ 链式配置成功！${PLAIN}"
+                    echo -e "  链路: ${BLUE}$LOCAL_TAG${PLAIN} ──▶ ${GREEN}$HOP_TAG${PLAIN} ──▶ ${YELLOW}$LAND_TAG${PLAIN} ──▶ 互联网"
+                    if [[ "$land_mode" == "B" ]]; then
+                        echo -e "  落地模式: ${CYAN}自动优选 (${#member_tags_arr[@]} 节点)${PLAIN}"
+                    elif [[ "$land_mode" == "C" ]]; then
+                        echo -e "  落地模式: ${CYAN}轮询选择 (${#member_tags_arr[@]} 节点)${PLAIN}"
+                    fi
                 else
-                    echo -e "${RED}✖ 错误：配置校验失败，已回滚。${PLAIN}"
+                    echo -e "${RED}✖ 配置校验失败，已回滚${PLAIN}"
                 fi
                 pause ;;
 
@@ -1019,79 +1426,200 @@ manage_routing() {
 }
 
 add_outbound() {
-    local node_type R_ADDR R_PORT R_METHOD R_PASS R_USER RAW_LINK OUT_TAG OUT_JSON
-    
+    local node_type RAW_LINK OUT_TAG OUT_JSON
+
+    # 内部函数：把一条已解析的链接写入配置，返回 0=成功
+    _write_one_node() {
+        local tag=$1
+        local json=$2
+        [[ -z "$json" ]] && return 1
+        make_tmp
+        jq --argjson obj "$json" '.outbounds += [$obj]' "$CONFIG_FILE" > "$_TMP_JSON"
+        if save_and_restart; then
+            echo -e "${GREEN}  ✔ [$tag] 写入成功${PLAIN}"
+            return 0
+        else
+            echo -e "${RED}  ✖ [$tag] 语法校验失败，已跳过${PLAIN}"
+            return 1
+        fi
+    }
+
     while true; do
         clear
-        echo -e "${YELLOW}--- 添加基础出站节点 ---${PLAIN}"
-        echo "1. 粘贴分享链接 (SS / Socks5)"
+        echo -e "${YELLOW}--- 添加出站节点 ---${PLAIN}"
+        echo "1. 粘贴单条链接 (SS/Socks5/HTTPS/VLESS/Trojan/Hysteria2/TUIC)"
         echo "2. 手动输入配置 (SS / Socks5 / HTTPS)"
+        echo "3. 订阅导入 (URL 或本地文件，批量解析)"
         echo "0. 返回主菜单"
         echo "------------------------------------------------"
-        read -p "请选择 [0-2]: " node_type
+        read -p "请选择 [0-3]: " node_type
 
         [[ "$node_type" == "0" ]] && break
 
-        OUT_TAG="hop-$(date +%s)"
-        R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""
-
+        # ============================================================
+        #  选项 1：单条链接解析
+        # ============================================================
         if [[ "$node_type" == "1" ]]; then
             read -p "请输入节点链接: " RAW_LINK
-            parse_proxy_link "$RAW_LINK" 
-            
+            parse_proxy_link "$RAW_LINK"
             if [[ -z "$R_ADDR" ]]; then
-                echo -e "${RED}错误：链接解析失败，请检查格式！${PLAIN}"
-                pause && continue
+                echo -e "${RED}✘ 链接解析失败，请检查格式！${PLAIN}"
+                pause; continue
             fi
+            # 用备注作 tag，备注为空则时间戳兜底
+            local name_safe=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
+            OUT_TAG="${name_safe:-hop-$(date +%s)}"
+            OUT_JSON=$(link_to_outbound_json "$OUT_TAG")
+            if [[ -z "$OUT_JSON" ]]; then
+                echo -e "${RED}✘ 不支持的协议 (hop_type=$hop_type)${PLAIN}"
+                pause; continue
+            fi
+            _write_one_node "$OUT_TAG" "$OUT_JSON"
+
+        # ============================================================
+        #  选项 2：手动输入
+        # ============================================================
         elif [[ "$node_type" == "2" ]]; then
             echo -e "\n请选择协议: 1) SS  2) Socks5  3) HTTPS"
             read -p "选择: " proto_choice
             read -p "地址 (Domain/IP): " R_ADDR
             read -p "端口 (Port): " R_PORT
-            
+            OUT_TAG="hop-$(date +%s)"
             case $proto_choice in
                 1)
                     read -p "加密方式 (如 aes-256-gcm): " R_METHOD
                     read -p "密码: " R_PASS
-                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
-                        '{"type":"shadowsocks","tag":$t,"server":$s,"server_port":($p|tonumber),"method":$m,"password":$pass}')
+                    hop_type=1
+                    OUT_JSON=$(link_to_outbound_json "$OUT_TAG")
                     ;;
                 2)
                     read -p "用户名 (可选): " R_USER
                     read -p "密码 (可选): " R_PASS
-                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" \
-                        '{"type":"socks","tag":$t,"server":$s,"server_port":($p|tonumber),"version":"5"} + (if $u != "" then {"username":$u,"password":$pass} else {} end)')
+                    hop_type=2
+                    OUT_JSON=$(link_to_outbound_json "$OUT_TAG")
                     ;;
                 3)
                     read -p "用户名 (可选): " R_USER
                     read -p "密码 (可选): " R_PASS
-                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" \
-                        '{"type":"http","tag":$t,"server":$s,"server_port":($p|tonumber),"tls":{"enabled":true}} + (if $u != "" then {"username":$u,"password":$pass} else {} end)')
+                    hop_type=3
+                    OUT_JSON=$(link_to_outbound_json "$OUT_TAG")
                     ;;
                 *) echo -e "${RED}非法输入${PLAIN}"; continue ;;
             esac
-        fi
+            _write_one_node "$OUT_TAG" "$OUT_JSON"
 
-        if [[ -z "$OUT_JSON" && -n "$R_ADDR" ]]; then
-            if [[ -n "$R_METHOD" ]]; then
-                OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
-                    '{"type":"shadowsocks","tag":$t,"server":$s,"server_port":($p|tonumber),"method":$m,"password":$pass}')
+        # ============================================================
+        #  选项 3：订阅导入
+        # ============================================================
+        elif [[ "$node_type" == "3" ]]; then
+            clear
+            echo -e "${YELLOW}--- 订阅导入 ---${PLAIN}"
+            echo "1. 从 URL 拉取订阅"
+            echo "2. 从本地文件导入"
+            echo "0. 返回"
+            read -p "请选择: " sub_mode
+            [[ "$sub_mode" == "0" ]] && continue
+
+            local raw_content=""
+
+            if [[ "$sub_mode" == "1" ]]; then
+                read -p "请输入订阅 URL: " SUB_URL
+                [[ -z "$SUB_URL" ]] && continue
+                echo -e "${CYAN}正在拉取订阅...${PLAIN}"
+                raw_content=$(curl -sL --connect-timeout 10 --max-time 30 "$SUB_URL")
+                if [[ -z "$raw_content" ]]; then
+                    echo -e "${RED}✘ 拉取失败，请检查 URL 或网络连通性${PLAIN}"
+                    pause; continue
+                fi
+            elif [[ "$sub_mode" == "2" ]]; then
+                read -p "请输入本地文件路径: " SUB_FILE
+                if [[ ! -f "$SUB_FILE" ]]; then
+                    echo -e "${RED}✘ 文件不存在: $SUB_FILE${PLAIN}"
+                    pause; continue
+                fi
+                raw_content=$(cat "$SUB_FILE")
             else
-                OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" \
-                    '{"type":"socks","tag":$t,"server":$s,"server_port":($p|tonumber),"version":"5"} + (if $u != "" then {"username":$u,"password":$pass} else {} end)')
+                continue
+            fi
+
+            # ---- 解码：判断内容是纯 Base64 还是明文链接列表 ----
+            local link_list=""
+
+            # 尝试 Base64 解码（订阅通常是 Base64 包裹的多行链接）
+            local decoded
+            decoded=$(echo "$raw_content" | tr -d '\r\n ' | \
+                base64 -d 2>/dev/null)
+
+            if echo "$decoded" | grep -qE '^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic)://'; then
+                # Base64 解码成功且含合法链接
+                link_list="$decoded"
+                echo -e "${CYAN}检测到 Base64 编码订阅，已解码${PLAIN}"
+            elif echo "$raw_content" | grep -qE '^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic)://'; then
+                # 明文链接列表
+                link_list="$raw_content"
+                echo -e "${CYAN}检测到明文链接订阅${PLAIN}"
+            else
+                echo -e "${RED}✘ 无法识别订阅格式（既非 Base64 也非明文链接）${PLAIN}"
+                pause; continue
+            fi
+
+            # ---- 逐行解析写入 ----
+            local total=0 ok=0 fail=0
+            while IFS= read -r line; do
+                # 跳过空行和注释行
+                [[ -z "$line" || "$line" =~ ^# ]] && continue
+                # 只处理已知协议前缀的行
+                [[ ! "$line" =~ ^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic):// ]] && continue
+                ((total++))
+
+                parse_proxy_link "$line"
+                if [[ -z "$R_ADDR" ]]; then
+                    echo -e "${RED}  [${total}] 解析失败: ${line:0:60}...${PLAIN}"
+                    ((fail++)); continue
+                fi
+
+                # 生成不重复的 tag
+                local name_safe=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
+                local base_tag="${name_safe:-sub-${total}}"
+                # 防止 tag 重名：如已存在则追加序号
+                local final_tag="$base_tag"
+                local dup=1
+                while jq -e --arg t "$final_tag" '.outbounds[] | select(.tag == $t)' "$CONFIG_FILE" > /dev/null 2>&1; do
+                    final_tag="${base_tag}-${dup}"; ((dup++))
+                done
+
+                local node_json
+                node_json=$(link_to_outbound_json "$final_tag")
+                if [[ -z "$node_json" ]]; then
+                    echo -e "${YELLOW}  [${total}] 不支持协议(hop_type=$hop_type)，跳过: $R_ADDR${PLAIN}"
+                    ((fail++)); continue
+                fi
+
+                # 批量写入：不重启，先累积到临时文件
+                make_tmp
+                jq --argjson obj "$node_json" '.outbounds += [$obj]' "$CONFIG_FILE" > "$_TMP_JSON"
+                if $SB_BIN check -c "$_TMP_JSON" > /dev/null 2>&1; then
+                    mv "$_TMP_JSON" "$CONFIG_FILE"
+                    _TMP_JSON=""
+                    echo -e "${GREEN}  [${total}] ✔ $final_tag ($R_ADDR:$R_PORT)${PLAIN}"
+                    ((ok++))
+                else
+                    rm -f "$_TMP_JSON"; _TMP_JSON=""
+                    echo -e "${RED}  [${total}] ✖ 校验失败，跳过: $R_ADDR${PLAIN}"
+                    ((fail++))
+                fi
+            done <<< "$link_list"
+
+            # ---- 全部写完后统一重启一次 ----
+            echo -e "\n${YELLOW}共解析 $total 条，成功 ${GREEN}$ok${PLAIN}${YELLOW} 条，失败 ${RED}$fail${PLAIN}${YELLOW} 条${PLAIN}"
+            if (( ok > 0 )); then
+                echo -e "${CYAN}正在重启 sing-box...${PLAIN}"
+                systemctl restart sing-box && \
+                    echo -e "${GREEN}✔ 重启完成，$ok 个节点已生效${PLAIN}" || \
+                    echo -e "${RED}✘ 重启失败，请检查配置${PLAIN}"
             fi
         fi
 
-        if [[ -n "$OUT_JSON" ]]; then
-            make_tmp
-            jq --argjson obj "$OUT_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > "$_TMP_JSON"
-            
-            if save_and_restart; then
-                echo -e "${GREEN}✔ 节点 [$OUT_TAG] 添加成功！${PLAIN}"
-            else
-                echo -e "${RED}✖ 语法检查失败，节点未添加。${PLAIN}"
-            fi
-        fi
         pause
     done
 }
