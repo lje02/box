@@ -17,7 +17,7 @@ declare -A APPS=(
     ["tg-sb管理"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tgbot.sh"
     ["tg 私聊"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tg_si.sh"
     ["工具环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/huanjing.sh"
-    ["Fail2Ban 配置"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/fail2ban.sh"
+    ["正/反向代理"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/daili.sh"
 )
 
 run_remote_app() {
