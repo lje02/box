@@ -224,22 +224,32 @@ EOF
 
     # ------------------------------------------
     # 模式一：反向代理
+    # 参数约定（target_or_path 竖线分隔）：
+    #   actual_target|ssl_mode|listen_port|enable_301|cert_path|key_path
+    #   ssl_mode: none / auto / manual
     # ------------------------------------------
     elif [[ "$mode" == "1" ]]; then
+        local actual_target ssl_mode listen_port enable_301 _cert _key
+        IFS='|' read -r actual_target ssl_mode listen_port enable_301 _cert _key <<< "$target_or_path"
+
         conf_file="$SITES_DIR/${domain_or_port}-proxy.conf"
         local target_host
-        target_host=$(echo "$target_or_path" | awk -F/ '{print $3}')
+        target_host=$(echo "$actual_target" | awk -F/ '{print $3}')
 
-        # 证书检测与提示放在文件写入之前，完全独立于重定向
         local has_ssl=false
-        local _cert="" _key=""
-        if find_certs_advanced "$domain_or_port"; then
+        if [[ "$ssl_mode" == "auto" ]]; then
+            if find_certs_advanced "$domain_or_port"; then
+                has_ssl=true; _cert="$CERT_PATH"; _key="$KEY_PATH"
+                success "自动发现证书: $_cert"
+            else
+                error "未找到任何证书，请改用手动模式或纯 HTTP 模式。"
+                exit 1
+            fi
+        elif [[ "$ssl_mode" == "manual" ]]; then
             has_ssl=true
-            _cert="$CERT_PATH"
-            _key="$KEY_PATH"
-            success "发现证书，配置反向代理 HTTPS + 301 强转"
+            success "使用手动指定证书: $_cert"
         else
-            warn "未发现证书，降级为普通 HTTP 反向代理"
+            warn "纯 HTTP 反向代理，端口 ${listen_port}"
         fi
 
         # local 声明时直接赋空值，避免 set -u 下 unset 报错
@@ -250,15 +260,19 @@ EOF
         # 文件写入块内只有纯配置文本，不含任何 echo/warn/info
         {
             if $has_ssl; then
-                cat <<EOF
+                if [[ "$enable_301" == "yes" ]]; then
+                    cat <<EOF
 server {
     listen 80;
     server_name $domain_or_port;
-    return 301 https://\$host\$request_uri;
+    return 301 https://\$host:${listen_port}\$request_uri;
 }
 
+EOF
+                fi
+                cat <<EOF
 server {
-    listen 443 ssl;
+    listen ${listen_port} ssl;
     server_name $domain_or_port;
     resolver 1.1.1.1 8.8.8.8 valid=300s;
 
@@ -267,7 +281,7 @@ EOF
             else
                 cat <<EOF
 server {
-    listen 80;
+    listen ${listen_port};
     server_name $domain_or_port;
     resolver 1.1.1.1 8.8.8.8 valid=300s;
 
@@ -277,7 +291,7 @@ EOF
             if [[ "$sub_mode" == "2" ]]; then
                 cat <<EOF
     location / {
-        proxy_pass $target_or_path;
+        proxy_pass $actual_target;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -289,9 +303,9 @@ EOF
             else
                 cat <<EOF
     location / {
-        proxy_pass $target_or_path;
+        proxy_pass $actual_target;
         proxy_set_header Host $target_host;
-        proxy_set_header Referer $target_or_path;
+        proxy_set_header Referer $actual_target;
         proxy_set_header Accept-Encoding "";
         proxy_ssl_server_name on;
         sub_filter "</head>" "<meta name='referrer' content='no-referrer'></head>";
@@ -459,15 +473,56 @@ create_site_wizard() {
             read -p "选择模式 [1-2，默认 1]: " sub_mode
             [[ -z "$sub_mode" ]] && sub_mode="1"
 
+            # 通用：SSL/端口配置（两个子模式共用）
+            echo ""
+            echo "请选择 SSL/证书模式:"
+            echo "  1. 自动扫描证书"
+            echo "  2. 手动指定证书路径"
+            echo "  3. 纯 HTTP，不使用证书"
+            read -p "选择 [1-3，默认 1]: " ssl_choice
+            [[ -z "$ssl_choice" ]] && ssl_choice="1"
+
+            _cert=""; _key=""; ssl_mode=""; listen_port=""; enable_301="no"
+
+            case "$ssl_choice" in
+                1)
+                    ssl_mode="auto"
+                    read -p "请输入 SSL 监听端口 (默认 443): " listen_port
+                    [[ -z "$listen_port" ]] && listen_port="443"
+                    read -p "是否开启 HTTP→HTTPS 301 强转？[Y/n]: " r301
+                    [[ "$r301" != "n" && "$r301" != "N" ]] && enable_301="yes"
+                    ;;
+                2)
+                    ssl_mode="manual"
+                    read -p "请输入证书文件路径 (fullchain.pem): " _cert
+                    [[ -z "$_cert" || ! -f "$_cert" ]] && { error "证书文件不存在: $_cert"; exit 1; }
+                    read -p "请输入私钥文件路径 (privkey.pem): " _key
+                    [[ -z "$_key" || ! -f "$_key" ]] && { error "私钥文件不存在: $_key"; exit 1; }
+                    read -p "请输入 SSL 监听端口 (默认 443): " listen_port
+                    [[ -z "$listen_port" ]] && listen_port="443"
+                    read -p "是否开启 HTTP→HTTPS 301 强转？[Y/n]: " r301
+                    [[ "$r301" != "n" && "$r301" != "N" ]] && enable_301="yes"
+                    ;;
+                3)
+                    ssl_mode="none"
+                    read -p "请输入 HTTP 监听端口 (默认 80): " listen_port
+                    [[ -z "$listen_port" ]] && listen_port="80"
+                    ;;
+                *)
+                    error "无效选项"; exit 1 ;;
+            esac
+
             if [[ "$sub_mode" == "1" ]]; then
                 check_sub_filter_module
                 read -p "请输入要镜像的目标网站 URL: " target_url
                 target_url=$(normalize_url "$target_url")
-                generate_nginx_conf "1" "1" "$domain" "$target_url"
+                packed="${target_url}|${ssl_mode}|${listen_port}|${enable_301}|${_cert}|${_key}"
+                generate_nginx_conf "1" "1" "$domain" "$packed"
             else
                 read -p "请输入后端目标 IP:端口 (如: 127.0.0.1:8080): " backend
                 backend=$(normalize_url "$backend")
-                generate_nginx_conf "1" "2" "$domain" "$backend"
+                packed="${backend}|${ssl_mode}|${listen_port}|${enable_301}|${_cert}|${_key}"
+                generate_nginx_conf "1" "2" "$domain" "$packed"
             fi
             ;;
         3)
