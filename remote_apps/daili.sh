@@ -208,9 +208,10 @@ EOF
             warn "未发现证书，降级为普通 HTTP 反向代理"
         fi
 
-        local loc_tmp
+        # local 声明时直接赋空值，避免 set -u 下 unset 报错
+        local loc_tmp=""
         loc_tmp=$(mktemp)
-        trap 'rm -f "$loc_tmp"' RETURN
+        trap '[[ -n "${loc_tmp:-}" ]] && rm -f "$loc_tmp"' RETURN
 
         # 文件写入块内只有纯配置文本，不含任何 echo/warn/info
         {
