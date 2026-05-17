@@ -35,6 +35,7 @@ MODULES_LIST=(
     "backups.sh"
     "tg_si.sh"
     "huanjing.sh"
+    "photo.sh"
 
 )
 
@@ -175,7 +176,8 @@ main_menu() {
         echo -e " 9. Telegram 系统监控"
         echo -e "10. Telegram 私聊bot"
         echo -e "11. 环境搭建"
-        echo -e "12. 备份/还原"
+        echo _e "12. photos"
+        echo -e "13. 备份/还原"
         echo -e "--------------------------------------------"
         echo -e "u. 更新全部       x. 卸载       0. 退出"
         echo -e "--------------------------------------------"
@@ -193,7 +195,8 @@ main_menu() {
             9) run_module "tgbot.sh" ;;
             10) run_module "tg_si.sh" ;;
             11) run_module "huanjing.sh" ;;
-            12) run_module "backups.sh" ;;
+            12) run_module "photo.sh" ;;
+            13) run_module "backups.sh" ;;
             u) update_all ;;
             x) uninstall_script ;;
             0) exit 0 ;;
