@@ -144,25 +144,42 @@ generate_nginx_conf() {
     local conf_file=""
 
     # ------------------------------------------
-    # 模式三：本地静态站点
+    # 模式三：本地静态站点（支持任意端口 + 三种证书模式）
     # ------------------------------------------
+    # 参数约定（通过 target_or_path 传递，竖线分隔）：
+    #   web_dir|listen_port|ssl_mode|cert_path|key_path|enable_301
+    #   ssl_mode: none / auto / manual
     if [[ "$mode" == "3" ]]; then
+        local web_dir listen_port ssl_mode _cert _key enable_301
+        IFS='|' read -r web_dir listen_port ssl_mode _cert _key enable_301 <<< "$target_or_path"
+
         conf_file="$SITES_DIR/${domain_or_port}-static.conf"
 
-        if find_certs_advanced "$domain_or_port"; then
-            success "发现证书，配置静态站点 HTTPS + 301 强转"
-            local _cert="$CERT_PATH" _key="$KEY_PATH"
-            cat > "$conf_file" <<EOF
+        if [[ "$ssl_mode" == "auto" || "$ssl_mode" == "manual" ]]; then
+            if [[ "$ssl_mode" == "auto" ]]; then
+                if find_certs_advanced "$domain_or_port"; then
+                    _cert="$CERT_PATH"; _key="$KEY_PATH"
+                    success "自动发现证书: $_cert"
+                else
+                    error "未找到任何证书，请改用手动模式或纯 HTTP 模式。"
+                    exit 1
+                fi
+            else
+                success "使用手动指定证书: $_cert"
+            fi
+
+            if [[ "$enable_301" == "yes" ]]; then
+                cat > "$conf_file" <<EOF
 server {
     listen 80;
     server_name $domain_or_port;
-    return 301 https://\$host\$request_uri;
+    return 301 https://\$host:${listen_port}\$request_uri;
 }
 
 server {
-    listen 443 ssl;
+    listen ${listen_port} ssl;
     server_name $domain_or_port;
-    root $target_or_path;
+    root $web_dir;
     index index.html index.htm;
 
 $(ssl_block "$_cert" "$_key")
@@ -172,13 +189,30 @@ $(ssl_block "$_cert" "$_key")
     }
 }
 EOF
+            else
+                cat > "$conf_file" <<EOF
+server {
+    listen ${listen_port} ssl;
+    server_name $domain_or_port;
+    root $web_dir;
+    index index.html index.htm;
+
+$(ssl_block "$_cert" "$_key")
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+            fi
+
         else
-            warn "未发现证书，降级为普通 HTTP 静态站点"
+            info "配置纯 HTTP 静态站点，端口 ${listen_port}"
             cat > "$conf_file" <<EOF
 server {
-    listen 80;
+    listen ${listen_port};
     server_name $domain_or_port;
-    root $target_or_path;
+    root $web_dir;
     index index.html index.htm;
 
     location / {
@@ -358,7 +392,7 @@ create_site_wizard() {
     check_and_install_nginx
     echo ""
 
-    echo "1. 静态站点托管（本地 HTML 目录，自带 HTTPS 301 强转）"
+    echo "1. 静态站点托管（自定义端口 / 自动或手动证书 / 纯 HTTP）"
     echo "2. 反向代理模式（网站镜像 / 多源聚合 / 端口穿透）"
     echo "3. 正向代理模式（仅 HTTP，HTTPS 请用 Squid/3proxy）"
     echo ""
@@ -366,11 +400,54 @@ create_site_wizard() {
 
     case "$main_mode" in
         1)
-            read -p "请输入你的域名 (如: www.yourdomain.com): " domain
+            read -p "请输入你的域名或 server_name (如: www.yourdomain.com): " domain
             [[ -z "$domain" ]] && { error "域名不能为空"; exit 1; }
+
             read -p "请输入网页文件根目录 (绝对路径，如: /var/www/my-site): " web_dir
             [[ -z "$web_dir" ]] && { error "根目录不能为空"; exit 1; }
-            generate_nginx_conf "3" "" "$domain" "$web_dir"
+
+            # 证书模式
+            echo ""
+            echo "请选择 SSL/证书模式:"
+            echo "  1. 自动扫描证书（根据域名查找常见路径）"
+            echo "  2. 手动指定证书路径"
+            echo "  3. 纯 HTTP，不使用证书"
+            read -p "选择 [1-3，默认 1]: " ssl_choice
+            [[ -z "$ssl_choice" ]] && ssl_choice="1"
+
+            _cert=""; _key=""; ssl_mode=""; listen_port=""; enable_301="no"
+
+            case "$ssl_choice" in
+                1)
+                    ssl_mode="auto"
+                    read -p "请输入 SSL 监听端口 (默认 443): " listen_port
+                    [[ -z "$listen_port" ]] && listen_port="443"
+                    read -p "是否开启 HTTP→HTTPS 301 强转？[Y/n]: " r301
+                    [[ "$r301" != "n" && "$r301" != "N" ]] && enable_301="yes"
+                    ;;
+                2)
+                    ssl_mode="manual"
+                    read -p "请输入证书文件路径 (fullchain.pem): " _cert
+                    [[ -z "$_cert" || ! -f "$_cert" ]] && { error "证书文件不存在: $_cert"; exit 1; }
+                    read -p "请输入私钥文件路径 (privkey.pem): " _key
+                    [[ -z "$_key" || ! -f "$_key" ]] && { error "私钥文件不存在: $_key"; exit 1; }
+                    read -p "请输入 SSL 监听端口 (默认 443): " listen_port
+                    [[ -z "$listen_port" ]] && listen_port="443"
+                    read -p "是否开启 HTTP→HTTPS 301 强转？[Y/n]: " r301
+                    [[ "$r301" != "n" && "$r301" != "N" ]] && enable_301="yes"
+                    ;;
+                3)
+                    ssl_mode="none"
+                    read -p "请输入 HTTP 监听端口 (默认 80): " listen_port
+                    [[ -z "$listen_port" ]] && listen_port="80"
+                    ;;
+                *)
+                    error "无效选项"; exit 1 ;;
+            esac
+
+            # 将扩展参数打包为竖线分隔字符串传入生成器
+            packed="${web_dir}|${listen_port}|${ssl_mode}|${_cert}|${_key}|${enable_301}"
+            generate_nginx_conf "3" "" "$domain" "$packed"
             ;;
         2)
             read -p "请输入解析好的域名: " domain
