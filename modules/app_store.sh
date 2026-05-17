@@ -14,7 +14,7 @@ check_dependencies
 # ---------- 远程应用注册表 ----------
 # 格式： "菜单显示名称|脚本下载URL"
 declare -A APPS=(
-    ["Node.js 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nodejs.sh"
+    ["公开相册"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/photo.sh"
     ["Docker 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/docker.sh"
     ["Nginx 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nginx.sh"
     ["BBR 优化"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/bbr.sh"
