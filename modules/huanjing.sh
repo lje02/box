@@ -1,12 +1,12 @@
 #!/bin/bash
-# 环境部署模块 (Node.js / Nginx / Python / Docker / MySQL / PHP 等)
+# 环境部署模块
 
-if [ -z "$VPS_COMMON_LOADED" ]; then
-    source /usr/local/share/vn_modules/common.sh 2>/dev/null || {
-        echo "无法加载公共函数库"
-        exit 1
-    }
-fi
+if [ -z "$VPS_COMMON_LOADED" ]; then          # 第 3-4 行
+    source /usr/local/share/vn_modules/common.sh 2>/dev/null || {
+        echo "无法加载公共函数库"
+        exit 1
+    }
+fi                                              # 第 9 行
 
 detect_os
 check_dependencies
