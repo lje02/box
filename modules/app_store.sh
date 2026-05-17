@@ -13,10 +13,10 @@ check_dependencies
 
 # 应用注册表 (全局)
 declare -A APPS=(
-    ["Node.js 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nodejs.sh"
-    ["Docker 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/docker.sh"
-    ["Nginx 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nginx.sh"
-    ["BBR 优化"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/bbr.sh"
+    ["公开相册"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/photo.sh"
+    ["tg-sb管理"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tgbot.sh"
+    ["tg 私聊"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tg_si.sh"
+    ["工具环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/huanjing.sh"
     ["Fail2Ban 配置"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/fail2ban.sh"
 )
 
