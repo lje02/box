@@ -31,11 +31,7 @@ MODULES_LIST=(
     "ssh_harden.sh"
     "traffic_monitor.sh"
     "logs.sh"
-    "tgbot.sh"
     "backups.sh"
-    "tg_si.sh"
-    "huanjing.sh"
-    "photo.sh"
     "app_store.sh"
 
 )
