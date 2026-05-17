@@ -1,5 +1,5 @@
 #!/bin/bash
-# 应用商店 - 远程加载，不存储功能代码
+# 应用商店 - 远程加载
 
 if [ -z "$VPS_COMMON_LOADED" ]; then
     source /usr/local/share/vn_modules/common.sh 2>/dev/null || {
@@ -11,33 +11,27 @@ fi
 detect_os
 check_dependencies
 
-# ---------- 远程应用注册表 ----------
-# 格式： "菜单显示名称|脚本下载URL"
+# 应用注册表 (全局)
 declare -A APPS=(
-    ["公开相册"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/photo.sh"
-    ["tg-singbox"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tgbot.sh"
-    ["tg-私聊"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tg_si.sh"
-    ["工具环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/huanjing.sh"
+    ["Node.js 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nodejs.sh"
+    ["Docker 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/docker.sh"
+    ["Nginx 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nginx.sh"
+    ["BBR 优化"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/bbr.sh"
     ["Fail2Ban 配置"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/fail2ban.sh"
-    # 后续新增应用只需在此添加一行
 )
 
-# ---------- 执行远程应用 ----------
 run_remote_app() {
-    local name="$1"
-    local url="$2"
-    local tmp_script="/tmp/vn_app_$$.sh"
-
+    local name="$1" url="$2" tmp="/tmp/vn_app_$$.sh"
     printf "${BLUE}▶ 正在加载: %s ...${NC}\n" "$name"
-    if curl -fsSL "$url" -o "$tmp_script" 2>/dev/null; then
-        if [ -s "$tmp_script" ]; then
-            chmod +x "$tmp_script"
-            bash "$tmp_script"
-            rm -f "$tmp_script"
+    if curl -fsSL "$url" -o "$tmp" 2>/dev/null; then
+        if [ -s "$tmp" ]; then
+            chmod +x "$tmp"
+            bash "$tmp"
+            rm -f "$tmp"
             printf "${GREEN}✔ %s 执行完毕。${NC}\n" "$name"
         else
             printf "${RED}✘ 下载的脚本为空。${NC}\n"
-            rm -f "$tmp_script"
+            rm -f "$tmp"
         fi
     else
         printf "${RED}✘ 无法连接到远程仓库，请检查网络。${NC}\n"
@@ -45,37 +39,40 @@ run_remote_app() {
     read -p "按回车键继续..." dummy
 }
 
-# ---------- 主菜单 ----------
-while true; do
-    clear
-    printf "${BLUE}===== 应用商店 (远程加载) =====${NC}\n"
-    printf "共 %d 个可用应用\n" "${#APPS[@]}"
-    echo "--------------------------------------"
-    local i=1
-    for app_name in "${!APPS[@]}"; do
-        printf "%d. %s\n" "$i" "$app_name"
-        ((i++))
-    done
-    echo "0. 返回主菜单"
-    read -p "选择: " choice
-
-    if [[ "$choice" == "0" ]]; then
-        break
-    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#APPS[@]}" ]; then
-        # 根据数字提取名称和URL
-        local selected_name="" selected_url=""
-        local j=1
-        for n in "${!APPS[@]}"; do
-            if [ "$j" -eq "$choice" ]; then
-                selected_name="$n"
-                selected_url="${APPS[$n]}"
-                break
-            fi
-            ((j++))
+# 将所有菜单逻辑移入函数，即可使用 local 变量
+app_store_menu() {
+    while true; do
+        clear
+        printf "${BLUE}===== 应用商店 (远程加载) =====${NC}\n"
+        printf "共 %d 个可用应用\n" "${#APPS[@]}"
+        echo "--------------------------------------"
+        local i=1
+        for app_name in "${!APPS[@]}"; do
+            printf "%d. %s\n" "$i" "$app_name"
+            ((i++))
         done
-        run_remote_app "$selected_name" "$selected_url"
-    else
-        printf "${RED}无效选项${NC}\n"
-        sleep 1
-    fi
-done
+        echo "0. 返回主菜单"
+        read -p "选择: " choice
+
+        if [[ "$choice" == "0" ]]; then
+            break
+        elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#APPS[@]}" ]; then
+            local selected_name="" selected_url=""
+            local j=1
+            for n in "${!APPS[@]}"; do
+                if [ "$j" -eq "$choice" ]; then
+                    selected_name="$n"
+                    selected_url="${APPS[$n]}"
+                    break
+                fi
+                ((j++))
+            done
+            run_remote_app "$selected_name" "$selected_url"
+        else
+            printf "${RED}无效选项${NC}\n"
+            sleep 1
+        fi
+    done
+}
+
+app_store_menu
