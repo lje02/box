@@ -15,9 +15,9 @@ check_dependencies
 # 格式： "菜单显示名称|脚本下载URL"
 declare -A APPS=(
     ["公开相册"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/photo.sh"
-    ["Docker 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/docker.sh"
-    ["Nginx 环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nginx.sh"
-    ["BBR 优化"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/bbr.sh"
+    ["tg-singbox"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tgbot.sh"
+    ["tg-私聊"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tg_si.sh"
+    ["工具环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/huanjing.sh"
     ["Fail2Ban 配置"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/fail2ban.sh"
     # 后续新增应用只需在此添加一行
 )
