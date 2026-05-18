@@ -18,7 +18,7 @@ declare -A APPS=(
     ["tg 私聊"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tg_si.sh"
     ["工具环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/huanjing.sh"
     ["正/反向代理"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/daili.sh"
-    ["证书/网站管理"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nginx-manager.sh"
+    ["证书/代理/网站"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/nginx-manager.sh"
 )
 
 run_remote_app() {
