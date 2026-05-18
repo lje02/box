@@ -438,15 +438,14 @@ write_redirect_block() {
     local https_port="$2"
     local http_port="${3:-80}"
 
-    local target_url
-    if [[ "$https_port" == "443" ]]; then
-        target_url="https://\$host\$request_uri"
-    else
-        target_url="https://\$host:${https_port}\$request_uri"
-    fi
-
     if [[ "$http_port" == "80" ]]; then
-        # 标准 80 端口：301 跳转到 HTTPS
+        # 标准 80 端口：301 永久跳转到 HTTPS
+        local target_url
+        if [[ "$https_port" == "443" ]]; then
+            target_url="https://\$host\$request_uri"
+        else
+            target_url="https://\$host:${https_port}\$request_uri"
+        fi
         cat <<EOF
 server {
     listen 80;
@@ -457,19 +456,19 @@ server {
 
 EOF
     else
-        # 非标准 HTTP 端口：直接拒绝，不提供 HTTP 访问
-        # 注意：此端口只用于强制拒绝明文连接，HTTPS 服务在下方 ssl 块
+        # 非标准端口：444 直接关闭连接，不做跳转
+        # 非标准端口不会被浏览器主动访问，301 无意义；
+        # 444 静默关闭连接，强迫客户端直接使用正确的 HTTPS 地址。
         cat <<EOF
-# 非标准端口 ${http_port} 拒绝 HTTP 明文访问（强制只走 HTTPS:${https_port}）
+# 非标准 HTTP 端口 ${http_port}：直接拒绝，请使用 HTTPS:${https_port}
 server {
     listen ${http_port};
     server_name $domain;
-    return 444;  # 直接断开，不返回任何内容
+    return 444;
 }
 
 EOF
-        warn "非标准端口 ${http_port} 的 HTTP 访问将被直接拒绝（return 444）"
-        warn "用户须直接访问 https://${domain}:${https_port}/"
+        warn "HTTP:${http_port} 已设为 444 拒绝，请直接访问 https://${domain}:${https_port}/"
     fi
 }
 
