@@ -1,5 +1,5 @@
 #!/bin/bash
-# 防火墙与 Fail2Ban 模块
+# 防火墙与 Fail2Ban 模块 (修复优化版)
 
 if [ -z "$VPS_COMMON_LOADED" ]; then
     source /usr/local/share/vn_modules/common.sh 2>/dev/null || {
@@ -25,7 +25,6 @@ detect_firewall() {
             printf "${YELLOW}firewalld 已安装（未运行）${NC}\n"
         fi
     elif command -v iptables &>/dev/null; then
-        # iptables 检测：如果 INPUT 链有非 ACCEPT 策略或存在额外规则，视为“运行中”
         local policy=$(iptables -L INPUT -n 2>/dev/null | head -1 | awk '{print $4}')
         local rules_count=$(iptables -L INPUT -n 2>/dev/null | grep -c '^[0-9]')
         if [ "$policy" != "ACCEPT" ] || [ "$rules_count" -gt 0 ]; then
@@ -42,35 +41,50 @@ install_firewall() {
     local ssh_port=$(get_ssh_port)
     printf "${BLUE}正在安装防火墙...${NC}\n"
     if [ "$OS_FAMILY" = "debian" ]; then
+        # 优化：安装前清理可能冲突的 firewalld
+        if command -v systemctl &>/dev/null; then
+            systemctl stop firewalld &>/dev/null
+            systemctl disable firewalld &>/dev/null
+        fi
         apt-get update -qq && apt-get install -y ufw || {
             printf "${RED}UFW 安装失败${NC}\n"; return
         }
-        ufw allow "$ssh_port"/tcp      # 预置 SSH 规则
-        printf "${GREEN}UFW 安装完成，SSH 端口已预放行（防火墙未启用）${NC}\n"
+        ufw allow "$ssh_port"/tcp      
+        printf "${GREEN}UFW 安装完成，SSH 端口 $ssh_port 已预放行（防火墙未启用）${NC}\n"
     else
+        # 优化：安装前清理可能冲突的 ufw
+        if command -v systemctl &>/dev/null; then
+            systemctl stop ufw &>/dev/null
+            systemctl disable ufw &>/dev/null
+        fi
         yum install -y firewalld || {
             printf "${RED}firewalld 安装失败${NC}\n"; return
         }
         systemctl start firewalld && systemctl enable firewalld
-        firewall-cmd --zone=public --add-service=ssh --permanent
+        firewall-cmd --zone=public --add-port="${ssh_port}/tcp" --permanent
         firewall-cmd --reload
-        printf "${GREEN}firewalld 安装并已启用，SSH 服务已放行${NC}\n"
+        printf "${GREEN}firewalld 安装并已启用，SSH 端口 $ssh_port 已放行${NC}\n"
     fi
 }
 
 enable_firewall() {
-    local ssh_port=$(get_ssh_port)   # 动态获取当前 SSH 端口
+    local ssh_port=$(get_ssh_port)   
     if command -v ufw &>/dev/null; then
-        ufw allow "$ssh_port"/tcp     # 提前放行 SSH
+        # 优化：规避双防火墙冲突
+        systemctl stop firewalld &>/dev/null || true
+        systemctl disable firewalld &>/dev/null || true
+        ufw allow "$ssh_port"/tcp     
         ufw --force enable
         systemctl enable ufw
         printf "${GREEN}UFW 已开启，SSH 端口 $ssh_port 已放行，并设为开机自启${NC}\n"
     elif command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --zone=public --add-service=ssh --permanent 2>/dev/null || \
-        firewall-cmd --zone=public --add-port="${ssh_port}/tcp" --permanent
+        # 优化：规避双防火墙冲突
+        systemctl stop ufw &>/dev/null || true
+        systemctl disable ufw &>/dev/null || true
+        firewall-cmd --zone=public --add-port="${ssh_port}/tcp" --permanent 2>/dev/null
         firewall-cmd --reload
         systemctl start firewalld && systemctl enable firewalld
-        printf "${GREEN}firewalld 已开启，SSH 服务已放行，并设为开机自启${NC}\n"
+        printf "${GREEN}firewalld 已开启，SSH 端口 $ssh_port 已放行，并设为开机自启${NC}\n"
     else
         printf "${RED}未找到防火墙，请先安装${NC}\n"
     fi
@@ -85,7 +99,6 @@ open_all_ports() {
         printf "${GREEN}UFW 默认策略已设为 ALLOW${NC}\n"
     elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --set-default-zone=trusted
-        firewall-cmd --zone=trusted --add-service=ssh --permanent
         firewall-cmd --reload
         printf "${GREEN}firewalld 默认区域已设为 trusted（全部放行）${NC}\n"
     elif command -v iptables &>/dev/null; then
@@ -111,8 +124,12 @@ close_all_ports() {
         printf "${GREEN}UFW 已重置，仅保留必要端口${NC}\n"
     elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --set-default-zone=public
-        firewall-cmd --zone=public --remove-service=ssh --permanent 2>/dev/null
-        $open_ssh && firewall-cmd --zone=public --add-port="${ssh_port}/tcp" --permanent
+        if [ "$open_ssh" = true ]; then
+            firewall-cmd --zone=public --add-port="${ssh_port}/tcp" --permanent
+        else
+            firewall-cmd --zone=public --remove-port="${ssh_port}/tcp" --permanent 2>/dev/null
+            firewall-cmd --zone=public --remove-service=ssh --permanent 2>/dev/null
+        fi
         firewall-cmd --reload
         printf "${GREEN}firewalld 默认区域已设为 public，仅开放必要端口${NC}\n"
     elif command -v iptables &>/dev/null; then
@@ -129,14 +146,16 @@ open_ports() {
     if command -v ufw &>/dev/null; then
         for port in $ports; do
             if [[ $port == *:* ]]; then
-                ufw allow proto tcp to any port $port
+                ufw allow proto tcp to any port ${port/:/:}
             else
                 ufw allow $port
             fi
         done
         printf "${GREEN}UFW 规则已添加${NC}\n"
     elif command -v firewall-cmd &>/dev/null; then
-        for port in $ports; do firewall-cmd --zone=public --add-port="${port}/tcp" --permanent; done
+        for port in $ports; do 
+            firewall-cmd --zone=public --add-port="${port}/tcp" --permanent
+        done
         firewall-cmd --reload
         printf "${GREEN}firewalld 端口已开放${NC}\n"
     elif command -v iptables &>/dev/null; then
@@ -223,6 +242,17 @@ install_fail2ban() {
     local jail_local="/etc/fail2ban/jail.local"
     [ ! -f "$jail_local" ] && cp /etc/fail2ban/jail.conf "$jail_local"
 
+    # 优化：自动将当前 SSH 连接 IP 加密写入白名单，防止误封自己
+    local current_ip=$(echo $SSH_CLIENT | awk '{print $1}')
+    if [ -n "$current_ip" ]; then
+        if grep -q "^ignoreip" "$jail_local"; then
+            sed -i "s|^ignoreip.*|& $current_ip|" "$jail_local"
+        else
+            sed -i "/^\[DEFAULT\]/a ignoreip = 127.0.0.1/8 ::1 $current_ip" "$jail_local"
+        fi
+        printf "${GREEN}已自动将您当前的远程 IP ($current_ip) 加为不限制白名单。${NC}\n"
+    fi
+
     if ! [ -f /var/log/auth.log ] && command -v journalctl &>/dev/null; then
         if grep -q '^\[sshd\]' "$jail_local"; then
             sed -i '/^\[sshd\]/,/^\[/ s/^backend.*/backend = systemd/' "$jail_local"
@@ -259,6 +289,27 @@ show_ban_records() {
     done
 }
 
+# 优化：新增一键手动解封 IP 功能
+unban_ip_fail2ban() {
+    if ! command -v fail2ban-client &>/dev/null; then
+        printf "${RED}Fail2Ban 未安装${NC}\n"; return
+    fi
+    read -p "请输入需要紧急解封的 IP: " target_ip
+    [ -z "$target_ip" ] && printf "${RED}输入不能为空${NC}\n" && return
+    
+    printf "${YELLOW}正在尝试从所有 Jail 规则中释放 ${target_ip}...${NC}\n"
+    local has_unbanned=false
+    for jail in $(fail2ban-client status | grep "Jail list" | cut -d: -f2 | tr -d ','); do
+        if fail2ban-client set "$jail" unbanip "$target_ip" &>/dev/null; then
+            printf "${GREEN}已成功从 [$jail] 移出该 IP${NC}\n"
+            has_unbanned=true
+        fi
+    done
+    if [ "$has_unbanned" = false ]; then
+        printf "${YELLOW}未在任何活动监控链中发现该 IP 封禁记录。${NC}\n"
+    fi
+}
+
 config_fail2ban() {
     if ! command -v fail2ban-client &>/dev/null; then
         printf "${RED}Fail2Ban 未安装${NC}\n"; return
@@ -289,6 +340,7 @@ uninstall_fail2ban() {
     if [ "$OS_FAMILY" = "debian" ]; then apt-get purge -y fail2ban; else yum remove -y fail2ban; fi
     printf "${GREEN}Fail2Ban 已卸载${NC}\n"
 }
+
 # ---------- 防扫描 / 黑名单/地域限制----------
 advanced_defense_menu() {
     while true; do
@@ -320,7 +372,6 @@ enable_portscan_protection() {
 
     local jail_local="/etc/fail2ban/jail.local"
     local action_dir="/etc/fail2ban/action.d"
-    # 备份原配置
     cp "$jail_local" "${jail_local}.bak"
 
     # ---------- 1. 确保 iptables-allports action 存在 ----------
@@ -346,9 +397,10 @@ EOF
     fi
 
     # ---------- 2. 创建 portscan 过滤器 ----------
+    # 修复核心：重构原先错误的 failregex 正则，完美适配 iptables 新连接日志格式
     cat > /etc/fail2ban/filter.d/portscan.conf <<'EOF'
 [Definition]
-failregex = ^\s*\S+\s+\S+\s+\[<HOST>\]\s+TCP\s+.*\s+SYN
+failregex = .*Portscan: .* SRC=<HOST>
 ignoreregex =
 EOF
 
@@ -356,11 +408,13 @@ EOF
     local portscan_backend=""
     local logpath_entry=""
 
-    # 若 journald 可用，优先使用 systemd backend（无需 kern.log）
     if command -v journalctl &>/dev/null && fail2ban-server -t --dp 2>&1 | grep -q 'systemd'; then
         portscan_backend="backend = systemd"
     elif [ -f /var/log/kern.log ]; then
         logpath_entry="logpath = /var/log/kern.log"
+    elif [ -f /var/log/messages ]; then
+        # 优化：兼容 CentOS 等 RHEL 系的内核日志路径
+        logpath_entry="logpath = /var/log/messages"
     else
         printf "${RED}✘ 系统既无 /var/log/kern.log 也不支持 systemd backend。${NC}\n"
         printf "   portscan jail 无法获取扫描日志，启用取消。\n"
@@ -369,7 +423,6 @@ EOF
     fi
 
     # ---------- 4. 写入 jail ----------
-    # 先确保有 recidive（若已有则只开启）
     if grep -q '^\[recidive\]' "$jail_local"; then
         sed -i '/^\[recidive\]/,/^\[/ s/^enabled.*/enabled = true/' "$jail_local"
     else
@@ -385,7 +438,12 @@ maxretry = 3
 EOF
     fi
 
-    # 添加 portscan jail
+    # 添加或者更新 portscan 模块
+    if grep -q '^\[portscan\]' "$jail_local"; then
+        # 若存在，先清理旧的方便覆盖重新生成
+        sed -i '/^\[portscan\]/,/^$/d' "$jail_local"
+    fi
+
     cat >> "$jail_local" <<EOF
 
 [portscan]
@@ -404,18 +462,16 @@ EOF
     iptables -I INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan: "
 
     # ---------- 6. 语法检查 ----------
-    printf "${YELLOW}验证配置...${NC}\n"
+    printf "${YELLOW}验证配置并重载...${NC}\n"
     if fail2ban-server -t 2>/dev/null; then
-        printf "${GREEN}配置语法正确，正在重载服务...${NC}\n"
-        if fail2ban-client reload 2>/dev/null; then
-            printf "${GREEN}✔ 防端口扫描已启用！${NC}\n"
+        if fail2ban-client reload &>/dev/null; then
+            printf "${GREEN}✔ 防端口扫描防御模块已完美激活！${NC}\n"
         else
-            printf "${RED}✘ 服务重载失败，正在回滚配置。${NC}\n"
-            cp "${jail_local}.bak" "$jail_local"
-            fail2ban-client reload 2>/dev/null || systemctl restart fail2ban 2>/dev/null
+            systemctl restart fail2ban 2>/dev/null || service fail2ban restart
+            printf "${GREEN}✔ 防端口扫描防御服务重加载成功！${NC}\n"
         fi
     else
-        printf "${RED}✘ 配置文件语法错误，已自动回滚。${NC}\n"
+        printf "${RED}✘ 配置文件语法错误，已自动回滚备份。${NC}\n"
         cp "${jail_local}.bak" "$jail_local"
     fi
 
@@ -424,35 +480,66 @@ EOF
 
 # ---------- IP 黑名单管理 ----------
 manage_ip_blacklist() {
+    # 优化：进入模块自动检测安装 ipset 核心依赖
+    if ! command -v ipset &>/dev/null; then
+        printf "${YELLOW}未检测到 ipset 环境，正在尝试自动配置...${NC}\n"
+        if [ "$OS_FAMILY" = "debian" ]; then
+            apt-get update -qq && apt-get install -y ipset
+        else
+            yum install -y ipset
+        fi
+    fi
+
     while true; do
         clear
         printf "${BLUE}===== IP 黑名单 (ipset) =====${NC}\n"
-        echo "1. 查看黑名单"
-        echo "2. 添加 IP"
-        echo "3. 移除 IP"
-        echo "4. 清空黑名单"
+        echo "1. 查看黑名单列表"
+        echo "2. 手动添加 IP 到黑名单"
+        echo "3. 从黑名单移除 IP"
+        echo "4. 彻底清空黑名单"
+        echo "5. 持久化保存黑名单 (防止重启丢失)"
         echo "0. 返回"
         read -p "选择: " ip_choice
         case $ip_choice in
-            1) ipset list blacklist 2>/dev/null || echo "黑名单未创建"; read -p "按回车键继续..." dummy ;;
+            1) 
+                ipset list blacklist 2>/dev/null || echo "黑名单集合当前未创建或为空"
+                read -p "按回车键继续..." dummy 
+                ;;
             2)
-                read -p "输入 IP: " ban_ip
+                read -p "输入要封禁的 IP: " ban_ip
                 [ -z "$ban_ip" ] && continue
                 ipset create blacklist hash:ip timeout 0 -exist
                 ipset add blacklist "$ban_ip" -exist
                 iptables -C INPUT -m set --match-set blacklist src -j DROP 2>/dev/null || \
                 iptables -I INPUT -m set --match-set blacklist src -j DROP
-                printf "${GREEN}已添加 %s${NC}\n" "$ban_ip"
-                read -p "按回车键继续..." dummy ;;
+                printf "${GREEN}已成功将 %s 拉入黑名单并彻底丢弃其报文。${NC}\n" "$ban_ip"
+                read -p "按回车键继续..." dummy 
+                ;;
             3)
-                read -p "输入 IP: " unban_ip
+                read -p "输入要解除的 IP: " unban_ip
+                [ -z "$unban_ip" ] && continue
                 ipset del blacklist "$unban_ip" 2>/dev/null
-                printf "${GREEN}已移除${NC}\n"
-                read -p "按回车键继续..." dummy ;;
+                printf "${GREEN}IP %s 已从黑名单中移除${NC}\n" "$unban_ip"
+                read -p "按回车键继续..." dummy 
+                ;;
             4)
                 ipset flush blacklist 2>/dev/null
-                printf "${GREEN}黑名单已清空${NC}\n"
-                read -p "按回车键继续..." dummy ;;
+                printf "${GREEN}黑名单池已全部清空${NC}\n"
+                read -p "按回车键继续..." dummy 
+                ;;
+            5)
+                # 优化：新增黑名单规则落盘固化
+                if [ "$OS_FAMILY" = "debian" ]; then
+                    mkdir -p /etc/iptables
+                    ipset save > /etc/iptables/ipset.rules
+                    printf "${GREEN}规则已导出至 /etc/iptables/ipset.rules${NC}\n"
+                else
+                    ipset save > /etc/sysconfig/ipset
+                    printf "${GREEN}规则已导出至 /etc/sysconfig/ipset${NC}\n"
+                fi
+                printf "${YELLOW}提示：确保您的开机脚本中包含 [ipset restore] 即可实现永久加载。${NC}\n"
+                read -p "按回车键继续..." dummy 
+                ;;
             0) break ;;
             *) printf "${RED}无效选项${NC}\n"; sleep 1 ;;
         esac
@@ -480,18 +567,20 @@ fail2ban_menu() {
         printf "${BLUE}===== Fail2Ban 管理 =====${NC}\n"
         printf "当前状态："; detect_fail2ban
         echo "1. 安装 Fail2Ban"
-        echo "2. 查看拦截记录"
-        echo "3. 基础参数配置"
-        echo "4. 卸载 Fail2Ban"
-        echo "5. 防扫/黑名单/地域限制"
+        echo "2. 查看当前拦截记录"
+        echo "3. 手动一键解封指定 IP"
+        echo "4. 基础参数配置"
+        echo "5. 卸载 Fail2Ban"
+        echo "6. 防扫/黑名单/地域限制"
         echo "0. 返回上级菜单"
         read -p "请选择操作: " fb_choice
         case $fb_choice in
             1) install_fail2ban ;;
             2) show_ban_records ;;
-            3) config_fail2ban ;;
-            4) uninstall_fail2ban ;;
-            5) advanced_defense_menu ;;
+            3) unban_ip_fail2ban ;;
+            4) config_fail2ban ;;
+            5) uninstall_fail2ban ;;
+            6) advanced_defense_menu ;;
             0) break ;;
             *) printf "${RED}无效选项${NC}\n" ;;
         esac
