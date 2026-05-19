@@ -342,6 +342,7 @@ uninstall_fail2ban() {
 }
 
 # ---------- 防扫描 / 黑名单/地域限制----------
+# ---------- 防扫描 / 黑名单/地域限制----------
 advanced_defense_menu() {
     while true; do
         clear
@@ -349,13 +350,13 @@ advanced_defense_menu() {
         printf "Fail2Ban: "; detect_fail2ban
         echo "1. 启用防端口扫描 (recidive+portscan)"
         echo "2. IP 黑名单管理 (ipset)"
-        echo "3. GeoIP 地域封锁 (参考说明)"
+        echo "3. GeoIP 国家/地域封锁 (自动载入)"
         echo "0. 返回 Fail2Ban 菜单"
         read -p "选择: " ad_choice
         case $ad_choice in
             1) enable_portscan_protection ;;
             2) manage_ip_blacklist ;;
-            3) show_geoip_guide ;;
+            3) manage_geoip ;;
             0) break ;;
             *) printf "${RED}无效选项${NC}\n"; sleep 1 ;;
         esac
@@ -546,19 +547,100 @@ manage_ip_blacklist() {
     done
 }
 
-# ---------- GeoIP 指引 ----------
-show_geoip_guide() {
-    clear
-    printf "${BLUE}===== GeoIP 地域封锁指南 =====${NC}\n"
-    echo "需要 xt_geoip 模块，请手动执行："
-    echo "  apt install xtables-addons-common libtext-csv-xs-perl"
-    echo "  /usr/lib/xtables-addons/xt_geoip_dl"
-    echo "  mkdir -p /usr/share/xt_geoip"
-    echo "  /usr/lib/xtables-addons/xt_geoip_build -D /usr/share/xt_geoip *.csv"
-    echo ""
-    echo "然后添加规则，例如："
-    echo "  iptables -I INPUT -m geoip --src-cc CN -j DROP"
-    read -p "按回车键继续..." dummy
+# ---------- GeoIP 自动化地域封锁 (基于 ipset) ----------
+manage_geoip() {
+    # 自动安装必要依赖
+    if ! command -v ipset &>/dev/null || ! command -v wget &>/dev/null; then
+        printf "${YELLOW}正在安装地域封锁所需依赖 (ipset, wget)...${NC}\n"
+        if [ "$OS_FAMILY" = "debian" ]; then
+            apt-get update -qq && apt-get install -y ipset wget
+        else
+            yum install -y ipset wget
+        fi
+    fi
+
+    while true; do
+        clear
+        printf "${BLUE}===== GeoIP 地域封锁 (一键版) =====${NC}\n"
+        echo "提示：基于 ipdeny.com 的 IP 库和系统 ipset 实现，无需编译内核"
+        echo "--------------------------------------------------------"
+        echo "1. 封锁指定国家/地区"
+        echo "2. 解封指定国家/地区"
+        echo "3. 查看当前已封锁的地区"
+        echo "4. 清空所有地域封锁"
+        echo "0. 返回上级菜单"
+        read -p "选择: " geo_choice
+        case $geo_choice in
+            1)
+                read -p "请输入要封锁的国家代码 (2位字母，如 cn=中国, ru=俄罗斯, us=美国): " cc
+                cc=$(echo "$cc" | tr '[:upper:]' '[:lower:]') # 转小写
+                if [[ ! "$cc" =~ ^[a-z]{2}$ ]]; then
+                    printf "${RED}格式错误，请输入正确的2位字母代码！${NC}\n"
+                    sleep 2; continue
+                fi
+                
+                printf "${YELLOW}正在下载 [%s] 的 IP 数据库...${NC}\n" "$cc"
+                local tmp_file="/tmp/geoip_${cc}.zone"
+                wget -qO "$tmp_file" "http://www.ipdeny.com/ipblocks/data/countries/${cc}.zone"
+                
+                if [ ! -s "$tmp_file" ]; then
+                    printf "${RED}下载失败，可能是网络问题或不支持的代码: %s${NC}\n" "$cc"
+                    sleep 2; continue
+                fi
+                
+                printf "${YELLOW}正在载入防火墙 (批量导入优化中，约需数秒)...${NC}\n"
+                ipset create geoip_$cc hash:net -exist
+                ipset flush geoip_$cc
+                
+                # 使用 ipset restore 批量导入（极速模式，避免循环卡死）
+                local tmp_restore="/tmp/ipset_${cc}_restore.txt"
+                > "$tmp_restore"
+                while read -r net; do
+                    echo "add geoip_$cc $net -exist" >> "$tmp_restore"
+                done < "$tmp_file"
+                ipset restore < "$tmp_restore"
+                
+                # 下发丢弃规则到 iptables
+                iptables -C INPUT -m set --match-set geoip_$cc src -j DROP 2>/dev/null || \
+                iptables -I INPUT -m set --match-set geoip_$cc src -j DROP
+                
+                # 清理临时文件
+                rm -f "$tmp_file" "$tmp_restore"
+                printf "${GREEN}✔ 成功！来自 [%s] 的所有访问已被防火墙拦截。${NC}\n" "$cc"
+                read -p "按回车键继续..." dummy
+                ;;
+            2)
+                read -p "请输入要解封的国家代码 (如 cn): " cc
+                cc=$(echo "$cc" | tr '[:upper:]' '[:lower:]')
+                # 先删 iptables 规则，再销毁 ipset 集合
+                iptables -D INPUT -m set --match-set geoip_$cc src -j DROP 2>/dev/null
+                ipset destroy geoip_$cc 2>/dev/null
+                printf "${GREEN}已解除对 [%s] 地区的封锁${NC}\n" "$cc"
+                read -p "按回车键继续..." dummy
+                ;;
+            3)
+                printf "${GREEN}当前已被封锁的地区代码：${NC}\n"
+                local blocked=$(ipset list -n 2>/dev/null | grep '^geoip_' | sed 's/geoip_//')
+                if [ -z "$blocked" ]; then
+                    echo "当前未配置任何地域封锁。"
+                else
+                    echo "$blocked"
+                fi
+                read -p "按回车键继续..." dummy
+                ;;
+            4)
+                printf "${YELLOW}正在清空所有 GeoIP 封锁规则...${NC}\n"
+                for setname in $(ipset list -n 2>/dev/null | grep '^geoip_'); do
+                    iptables -D INPUT -m set --match-set "$setname" src -j DROP 2>/dev/null
+                    ipset destroy "$setname" 2>/dev/null
+                done
+                printf "${GREEN}所有地域封锁已全部清空${NC}\n"
+                read -p "按回车键继续..." dummy
+                ;;
+            0) break ;;
+            *) printf "${RED}无效选项${NC}\n"; sleep 1 ;;
+        esac
+    done
 }
 
 fail2ban_menu() {
