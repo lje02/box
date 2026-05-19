@@ -342,7 +342,6 @@ uninstall_fail2ban() {
 }
 
 # ---------- 防扫描 / 黑名单/地域限制----------
-# ---------- 防扫描 / 黑名单/地域限制----------
 advanced_defense_menu() {
     while true; do
         clear
@@ -364,6 +363,7 @@ advanced_defense_menu() {
 }
 
 # ---------- 防端口扫描 ----------
+# ---------- 防端口扫描 (修复优化版) ----------
 enable_portscan_protection() {
     if ! pgrep -x fail2ban-server &>/dev/null; then
         printf "${RED}Fail2Ban 未运行，请先启动。${NC}\n"
@@ -371,13 +371,20 @@ enable_portscan_protection() {
         return
     fi
 
+    # 获取当前 SSH 端口，防误封自己
+    local current_ssh_port=$(grep "^Port" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+    current_ssh_port=${current_ssh_port:-22}
+
+    printf "${YELLOW}⚠ 警告：必须豁免正常业务端口，否则正常访客将被当成扫描者封禁！${NC}\n"
+    read -p "请输入要放行的业务端口 (逗号分隔，默认 $current_ssh_port,80,443): " white_ports
+    white_ports=${white_ports:-"$current_ssh_port,80,443"}
+
     local jail_local="/etc/fail2ban/jail.local"
     local action_dir="/etc/fail2ban/action.d"
     cp "$jail_local" "${jail_local}.bak"
 
     # ---------- 1. 确保 iptables-allports action 存在 ----------
     if [ ! -f "$action_dir/iptables-allports.conf" ]; then
-        printf "${YELLOW}创建 iptables-allports 动作...${NC}\n"
         mkdir -p "$action_dir"
         cat > "$action_dir/iptables-allports.conf" <<'EOF'
 [Definition]
@@ -397,8 +404,7 @@ chain = INPUT
 EOF
     fi
 
-    # ---------- 2. 创建 portscan 过滤器 ----------
-    # 修复核心：重构原先错误的 failregex 正则，完美适配 iptables 新连接日志格式
+    # ---------- 2. 创建精准的 portscan 过滤器 ----------
     cat > /etc/fail2ban/filter.d/portscan.conf <<'EOF'
 [Definition]
 failregex = .*Portscan: .* SRC=<HOST>
@@ -414,37 +420,22 @@ EOF
     elif [ -f /var/log/kern.log ]; then
         logpath_entry="logpath = /var/log/kern.log"
     elif [ -f /var/log/messages ]; then
-        # 优化：兼容 CentOS 等 RHEL 系的内核日志路径
         logpath_entry="logpath = /var/log/messages"
     else
-        printf "${RED}✘ 系统既无 /var/log/kern.log 也不支持 systemd backend。${NC}\n"
-        printf "   portscan jail 无法获取扫描日志，启用取消。\n"
-        read -p "按回车键继续..." dummy
-        return
+        printf "${RED}✘ 未找到内核日志路径，功能启用取消。${NC}\n"
+        sleep 2; return
     fi
 
-    # ---------- 4. 写入 jail ----------
+    # ---------- 4. 写入 jail (调整判定阈值) ----------
     if grep -q '^\[recidive\]' "$jail_local"; then
         sed -i '/^\[recidive\]/,/^\[/ s/^enabled.*/enabled = true/' "$jail_local"
-    else
-        cat >> "$jail_local" <<'EOF'
-
-[recidive]
-enabled  = true
-logpath  = /var/log/fail2ban.log
-banaction = iptables-allports[name=recidive]
-bantime  = 1w
-findtime = 1d
-maxretry = 3
-EOF
     fi
 
-    # 添加或者更新 portscan 模块
     if grep -q '^\[portscan\]' "$jail_local"; then
-        # 若存在，先清理旧的方便覆盖重新生成
         sed -i '/^\[portscan\]/,/^$/d' "$jail_local"
     fi
 
+    # 优化点：阈值收紧到 4 次，因为业务端口已被排除，碰触其他端口 4 次必是扫描
     cat >> "$jail_local" <<EOF
 
 [portscan]
@@ -452,27 +443,34 @@ enabled  = true
 filter   = portscan
 ${logpath_entry}
 ${portscan_backend}
-maxretry = 10
+maxretry = 4
 findtime = 60
 bantime  = 86400
 banaction = iptables-allports[name=portscan]
 EOF
 
-    # ---------- 5. 添加 iptables 日志记录规则 ----------
-    iptables -C INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan: " 2>/dev/null || \
-    iptables -I INPUT -p tcp -m state --state NEW -j LOG --log-prefix "Portscan: "
+    # ---------- 5. 构建安全无误伤的 iptables 探测链 ----------
+    # 先清理旧链，防止重复写入
+    iptables -D INPUT -p tcp -m state --state NEW -j F2B_PORTSCAN 2>/dev/null
+    iptables -F F2B_PORTSCAN 2>/dev/null
+    iptables -X F2B_PORTSCAN 2>/dev/null
 
-    # ---------- 6. 语法检查 ----------
-    printf "${YELLOW}验证配置并重载...${NC}\n"
+    iptables -N F2B_PORTSCAN
+    # 1. 业务端口直接 RETURN 放行，绝对不记录日志（防止误封真实用户）
+    iptables -A F2B_PORTSCAN -p tcp -m multiport --dports "$white_ports" -j RETURN
+    # 2. 对其它非业务端口的探测，记录到内核日志
+    iptables -A F2B_PORTSCAN -p tcp -m state --state NEW -j LOG --log-prefix "Portscan: "
+    
+    # 插入到 INPUT 最顶端
+    iptables -I INPUT 1 -p tcp -m state --state NEW -j F2B_PORTSCAN
+
+    # ---------- 6. 重载生效 ----------
+    printf "${YELLOW}正在使规则生效...${NC}\n"
     if fail2ban-server -t 2>/dev/null; then
-        if fail2ban-client reload &>/dev/null; then
-            printf "${GREEN}✔ 防端口扫描防御模块已完美激活！${NC}\n"
-        else
-            systemctl restart fail2ban 2>/dev/null || service fail2ban restart
-            printf "${GREEN}✔ 防端口扫描防御服务重加载成功！${NC}\n"
-        fi
+        fail2ban-client reload &>/dev/null || systemctl restart fail2ban 2>/dev/null
+        printf "${GREEN}✔ 防端口扫描已完美激活！业务端口 ($white_ports) 已被保护。${NC}\n"
     else
-        printf "${RED}✘ 配置文件语法错误，已自动回滚备份。${NC}\n"
+        printf "${RED}✘ 配置文件语法错误，已自动回滚。${NC}\n"
         cp "${jail_local}.bak" "$jail_local"
     fi
 
