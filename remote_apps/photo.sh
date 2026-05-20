@@ -114,7 +114,9 @@ import jwt                from 'jsonwebtoken'
 import crypto             from 'crypto'
 import { fileURLToPath }  from 'url'
 import { dirname, join }  from 'path'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync } from 'fs'
+import multer from 'multer'
+import { extname } from 'path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT      = process.env.PORT || 3000
@@ -145,6 +147,17 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS photos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    album_id   TEXT NOT NULL,
+    filename   TEXT NOT NULL,
+    original   TEXT NOT NULL,
+    mimetype   TEXT DEFAULT 'image/jpeg',
+    size       INTEGER DEFAULT 0,
+    sort_order INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE
   );
 `)
 
@@ -347,6 +360,59 @@ if (existsSync(distPath)) {
   app.use(express.static(distPath))
   app.get('*', (_, res) => res.sendFile(join(distPath, 'index.html')))
 }
+// ---------- 照片上传配置 ----------
+const UPLOAD_DIR = join(DATA_DIR, 'photos');
+if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const unique = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    cb(null, unique + extname(file.originalname));
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('只允许上传图片'));
+  }
+});
+
+app.use('/photos', express.static(UPLOAD_DIR));
+
+// 获取相册所有照片
+app.get('/api/albums/:id/photos', (req, res) => {
+  const photos = db.prepare('SELECT * FROM photos WHERE album_id = ? ORDER BY sort_order, created_at').all(req.params.id);
+  photos.forEach(p => p.url = `/photos/${p.filename}`);
+  res.json(photos);
+});
+
+// 上传照片（需管理员）
+app.post('/api/albums/:id/photos', requireAdmin, upload.single('photo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '请选择图片' });
+  const now = new Date().toISOString();
+  const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM photos WHERE album_id = ?').get(req.params.id)?.m || 0;
+  db.prepare(`INSERT INTO photos (album_id, filename, original, mimetype, size, sort_order, created_at)
+              VALUES (?,?,?,?,?,?,?)`)
+    .run(req.params.id, req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, maxOrder + 1, now);
+  const count = db.prepare('SELECT COUNT(*) as cnt FROM photos WHERE album_id = ?').get(req.params.id).cnt;
+  db.prepare('UPDATE albums SET photo_count = ? WHERE id = ?').run(count, req.params.id);
+  res.status(201).json({ id: req.file.filename, url: `/photos/${req.file.filename}` });
+});
+
+// 删除照片（管理员）
+app.delete('/api/photos/:id', requireAdmin, (req, res) => {
+  const photo = db.prepare('SELECT * FROM photos WHERE id = ?').get(req.params.id);
+  if (!photo) return res.status(404).json({ error: '照片不存在' });
+  const filePath = join(UPLOAD_DIR, photo.filename);
+  if (existsSync(filePath)) unlinkSync(filePath);
+  db.prepare('DELETE FROM photos WHERE id = ?').run(req.params.id);
+  const count = db.prepare('SELECT COUNT(*) as cnt FROM photos WHERE album_id = ?').get(photo.album_id).cnt;
+  db.prepare('UPDATE albums SET photo_count = ? WHERE id = ?').run(count, photo.album_id);
+  res.json({ ok: true });
+});
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  📷 Photo Album 全栈版已启动`)
@@ -575,6 +641,60 @@ export default function App() {
   const [saving,       setSaving]       = useState(false);
   const [form, setForm] = useState({ title:"", cover:"", category:"", tags:"", description:"", photoCount:"" });
   const [settingsForm, setSettingsForm] = useState({ siteTitle:"", albumsPerPage:6, adminPassword:"" });
+
+const [photoList, setPhotoList] = useState([]);
+const [uploading, setUploading] = useState(false);
+
+// 加载照片列表
+const fetchPhotos = useCallback(async (albumId) => {
+  try {
+    const res = await fetch(`/api/albums/${albumId}/photos`);
+    const data = await res.json();
+    setPhotoList(data);
+  } catch (e) { console.error(e); }
+}, []);
+
+// 上传照片
+const handleUpload = async (albumId, file) => {
+  setUploading(true);
+  const formData = new FormData();
+  formData.append('photo', file);
+  try {
+    const tk = sessionStorage.getItem("adm_tk") || token;
+    const res = await fetch(`/api/albums/${albumId}/photos`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${tk}` },
+      body: formData
+    });
+    if (!res.ok) throw new Error('上传失败');
+    await fetchPhotos(albumId);
+    await loadData(); // 更新相册总数
+  } catch (e) { alert(e.message); }
+  setUploading(false);
+};
+
+// 删除照片
+const handleDeletePhoto = async (photoId, albumId) => {
+  if (!confirm('确定删除这张照片？')) return;
+  try {
+    const tk = sessionStorage.getItem("adm_tk") || token;
+    await fetch(`/api/photos/${photoId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${tk}` }
+    });
+    await fetchPhotos(albumId);
+    await loadData();
+  } catch (e) { alert(e.message); }
+};
+
+// 监听详情弹窗，自动加载照片
+useEffect(() => {
+  if (selectedAlbum) {
+    fetchPhotos(selectedAlbum.id);
+  } else {
+    setPhotoList([]);
+  }
+}, [selectedAlbum, fetchPhotos]);
 
   /* ── API 工具 ──────────────────────────────── */
   const loadData = useCallback(async () => {
@@ -1071,41 +1191,79 @@ export default function App() {
 
     {/* 相册详情弹窗 */}
     {selectedAlbum && (
-      <div className="overlay" onClick={e => e.target === e.currentTarget && setSelectedAlbum(null)}>
-        <div className="modal">
-          {selectedAlbum.cover && (
-            <img src={selectedAlbum.cover} alt={selectedAlbum.title} className="modal-img" />
-          )}
-          <div className="modal-body">
-            <div className="modal-top">
-              <div className="modal-title">{selectedAlbum.title}</div>
-              <button className="modal-close" onClick={() => setSelectedAlbum(null)}>✕</button>
-            </div>
-            <div className="modal-meta">
-              <span className="badge">{selectedAlbum.category}</span>
-              <span style={{fontSize:12,color:"var(--text3)"}}>{selectedAlbum.photoCount} 张照片</span>
-              <span style={{fontSize:12,color:"var(--text3)"}}>更新 {fmtDate(selectedAlbum.updatedAt)}</span>
-            </div>
-            {selectedAlbum.description && (
-              <div className="modal-desc">{selectedAlbum.description}</div>
-            )}
-            {selectedAlbum.tags.length > 0 && (
-              <div className="modal-tags">
-                {selectedAlbum.tags.map(t => (
-                  <button key={t} className="tag-btn"
-                    onClick={() => { setSelectedAlbum(null); selectTag(t); }}>
-                    #{t}
-                  </button>
-                ))}
-              </div>
+  <div className="overlay" onClick={e => e.target === e.currentTarget && setSelectedAlbum(null)}>
+    <div className="modal" style={{maxWidth: '700px'}}>
+      {selectedAlbum.cover && (
+        <img src={selectedAlbum.cover} alt="" className="modal-img" />
+      )}
+      <div className="modal-body">
+        {/* ---- 保留原有的标题、描述、标签 ---- */}
+        <div className="modal-top">
+          <div className="modal-title">{selectedAlbum.title}</div>
+          <button className="modal-close" onClick={() => setSelectedAlbum(null)}>✕</button>
+        </div>
+        <div className="modal-meta">
+          <span className="badge">{selectedAlbum.category}</span>
+          <span style={{fontSize:12,color:"var(--text3)"}}>{photoList.length} 张照片</span>
+          <span style={{fontSize:12,color:"var(--text3)"}}>更新 {fmtDate(selectedAlbum.updatedAt)}</span>
+        </div>
+        {selectedAlbum.description && (
+          <div className="modal-desc">{selectedAlbum.description}</div>
+        )}
+        {selectedAlbum.tags.length > 0 && (
+          <div className="modal-tags">
+            {selectedAlbum.tags.map(t => (
+              <button key={t} className="tag-btn"
+                onClick={() => { setSelectedAlbum(null); selectTag(t); }}>
+                #{t}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* ---- 照片内容区域 ---- */}
+        <div style={{marginTop:'1.5rem', borderTop:'1px solid var(--border)', paddingTop:'1rem'}}>
+          <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.75rem'}}>
+            <strong>相册内容 ({photoList.length})</strong>
+            {loggedIn && (
+              <label className="btn btn-dark btn-sm" style={{cursor:'pointer'}}>
+                {uploading ? '上传中...' : '＋ 添加照片'}
+                <input type="file" accept="image/*" style={{display:'none'}}
+                  onChange={e => {
+                    if (e.target.files[0]) handleUpload(selectedAlbum.id, e.target.files[0]);
+                    e.target.value = '';
+                  }} />
+              </label>
             )}
           </div>
+          {photoList.length === 0 ? (
+            <div className="empty" style={{padding:'1rem'}}>
+              <div className="empty-icon">📷</div>
+              <div className="empty-txt">此相册还没有照片</div>
+            </div>
+          ) : (
+            <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(120px, 1fr))', gap:'0.5rem'}}>
+              {photoList.map(p => (
+                <div key={p.id} style={{position:'relative', borderRadius:'6px', overflow:'hidden', border:'1px solid var(--border)'}}>
+                  <img src={p.url} alt="" style={{width:'100%', aspectRatio:'1', objectFit:'cover'}} loading="lazy" />
+                  {loggedIn && (
+                    <button
+                      onClick={() => handleDeletePhoto(p.id, selectedAlbum.id)}
+                      style={{
+                        position:'absolute', top:'4px', right:'4px',
+                        background:'rgba(0,0,0,0.5)', color:'#fff', border:'none',
+                        borderRadius:'50%', width:'20px', height:'20px', fontSize:'12px',
+                        cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center'
+                      }}>×</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
-    )}
-    </>
-  );
-}
+    </div>
+  </div>
+)}
 APPJSX
 
 # ────────────────────────────────────────
