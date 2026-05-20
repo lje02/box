@@ -467,7 +467,11 @@ import { useState, useEffect, useCallback } from "react";
 const ADMIN_HASH = "#admin";
 
 function fmtDate(iso) {
-  return new Date(iso).toLocaleDateString("zh-CN", { year: "numeric", month: "short", day: "numeric" });
+  return new Date(iso).toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 /* ── 全局样式 ───────────────────────────────── */
@@ -605,16 +609,17 @@ textarea.fi{resize:vertical;min-height:72px}
 /* ── App 主组件 ─────────────────────────────── */
 export default function App() {
   /* ── 数据状态 ── */
-  const [loading,  setLoading]  = useState(true);
+  const [loading, setLoading] = useState(true);
   const [data, setData] = useState({
-    albums: [], categories: [],
-    settings: { albumsPerPage: 6, siteTitle: "我的相册" }
+    albums: [],
+    categories: [],
+    settings: { albumsPerPage: 6, siteTitle: "我的相册" },
   });
 
   /* ── 认证状态 ── */
-  const [token,    setToken]    = useState("");
+  const [token, setToken] = useState("");
   const [loggedIn, setLoggedIn] = useState(false);
-  const [pwInput,  setPwInput]  = useState("");
+  const [pwInput, setPwInput] = useState("");
   const [loginErr, setLoginErr] = useState("");
 
   /* ── 路由 ── */
@@ -622,90 +627,53 @@ export default function App() {
 
   /* ── 布局 ── */
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [mobileOpen,  setMobileOpen]  = useState(false);
-  const [isMobile,    setIsMobile]    = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
 
   /* ── 前台筛选 ── */
   const [activeCategory, setActiveCategory] = useState("全部");
-  const [activeTag,      setActiveTag]      = useState(null);
-  const [searchQ,        setSearchQ]        = useState("");
-  const [page,           setPage]           = useState(1);
-  const [selectedAlbum,  setSelectedAlbum]  = useState(null);
+  const [activeTag, setActiveTag] = useState(null);
+  const [searchQ, setSearchQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [selectedAlbum, setSelectedAlbum] = useState(null);
 
   /* ── 后台 UI ── */
-  const [adminTab,     setAdminTab]     = useState("albums");
-  const [showForm,     setShowForm]     = useState(false);
+  const [adminTab, setAdminTab] = useState("albums");
+  const [showForm, setShowForm] = useState(false);
   const [editingAlbum, setEditingAlbum] = useState(null);
-  const [newCat,       setNewCat]       = useState("");
-  const [delConfirm,   setDelConfirm]   = useState(null);
-  const [saving,       setSaving]       = useState(false);
-  const [form, setForm] = useState({ title:"", cover:"", category:"", tags:"", description:"", photoCount:"" });
-  const [settingsForm, setSettingsForm] = useState({ siteTitle:"", albumsPerPage:6, adminPassword:"" });
+  const [newCat, setNewCat] = useState("");
+  const [delConfirm, setDelConfirm] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    title: "",
+    cover: "",
+    category: "",
+    tags: "",
+    description: "",
+    photoCount: "",
+  });
+  const [settingsForm, setSettingsForm] = useState({
+    siteTitle: "",
+    albumsPerPage: 6,
+    adminPassword: "",
+  });
 
-const [photoList, setPhotoList] = useState([]);
-const [uploading, setUploading] = useState(false);
-
-// 加载照片列表
-const fetchPhotos = useCallback(async (albumId) => {
-  try {
-    const res = await fetch(`/api/albums/${albumId}/photos`);
-    const data = await res.json();
-    setPhotoList(data);
-  } catch (e) { console.error(e); }
-}, []);
-
-// 上传照片
-const handleUpload = async (albumId, file) => {
-  setUploading(true);
-  const formData = new FormData();
-  formData.append('photo', file);
-  try {
-    const tk = sessionStorage.getItem("adm_tk") || token;
-    const res = await fetch(`/api/albums/${albumId}/photos`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${tk}` },
-      body: formData
-    });
-    if (!res.ok) throw new Error('上传失败');
-    await fetchPhotos(albumId);
-    await loadData(); // 更新相册总数
-  } catch (e) { alert(e.message); }
-  setUploading(false);
-};
-
-// 删除照片
-const handleDeletePhoto = async (photoId, albumId) => {
-  if (!confirm('确定删除这张照片？')) return;
-  try {
-    const tk = sessionStorage.getItem("adm_tk") || token;
-    await fetch(`/api/photos/${photoId}`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${tk}` }
-    });
-    await fetchPhotos(albumId);
-    await loadData();
-  } catch (e) { alert(e.message); }
-};
-
-// 监听详情弹窗，自动加载照片
-useEffect(() => {
-  if (selectedAlbum) {
-    fetchPhotos(selectedAlbum.id);
-  } else {
-    setPhotoList([]);
-  }
-}, [selectedAlbum, fetchPhotos]);
+  /* ── 照片相关状态 ── */
+  const [photoList, setPhotoList] = useState([]);
+  const [uploading, setUploading] = useState(false);
 
   /* ── API 工具 ──────────────────────────────── */
   const loadData = useCallback(async () => {
     try {
       const [albs, cats, sett] = await Promise.all([
-        fetch("/api/albums").then(r => r.json()),
-        fetch("/api/categories").then(r => r.json()),
-        fetch("/api/settings").then(r => r.json()),
+        fetch("/api/albums").then((r) => r.json()),
+        fetch("/api/categories").then((r) => r.json()),
+        fetch("/api/settings").then((r) => r.json()),
       ]);
       setData({ albums: albs, categories: cats, settings: sett });
-    } catch (e) { console.error("loadData error:", e); }
+    } catch (e) {
+      console.error("loadData error:", e);
+    }
     setLoading(false);
   }, []);
 
@@ -713,32 +681,83 @@ useEffect(() => {
     const tk = sessionStorage.getItem("adm_tk") || token;
     return fetch(`/api${path}`, {
       method,
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${tk}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tk}`,
+      },
       body: body !== undefined ? JSON.stringify(body) : undefined,
-    }).then(async r => {
+    }).then(async (r) => {
       const json = await r.json();
       if (!r.ok) throw new Error(json.error || "请求失败");
       return json;
     });
   }
 
-  /* ── 初始化 ────────────────────────────────── */
-  useEffect(() => {
-    // 加载公开数据
-    loadData();
-    // 验证已存储的 Token
-    const tk = sessionStorage.getItem("adm_tk");
-    if (tk) {
-      fetch("/api/auth/verify", { headers: { Authorization: `Bearer ${tk}` } })
-        .then(r => {
-          if (r.ok) { setToken(tk); setLoggedIn(true); }
-          else sessionStorage.removeItem("adm_tk");
-        })
-        .catch(() => {});
+  /* ── 照片 API ──────────────────────────────── */
+  const fetchPhotos = useCallback(async (albumId) => {
+    try {
+      const res = await fetch(`/api/albums/${albumId}/photos`);
+      const data = await res.json();
+      setPhotoList(data);
+    } catch (e) {
+      console.error(e);
     }
   }, []);
 
-  // 路由监听（hash 变化）
+  const handleUpload = async (albumId, file) => {
+    setUploading(true);
+    const formData = new FormData();
+    formData.append("photo", file);
+    try {
+      const tk = sessionStorage.getItem("adm_tk") || token;
+      const res = await fetch(`/api/albums/${albumId}/photos`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tk}` },
+        body: formData,
+      });
+      if (!res.ok) throw new Error("上传失败");
+      await fetchPhotos(albumId);
+      await loadData();
+    } catch (e) {
+      alert(e.message);
+    }
+    setUploading(false);
+  };
+
+  const handleDeletePhoto = async (photoId, albumId) => {
+    if (!confirm("确定删除这张照片？")) return;
+    try {
+      const tk = sessionStorage.getItem("adm_tk") || token;
+      await fetch(`/api/photos/${photoId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${tk}` },
+      });
+      await fetchPhotos(albumId);
+      await loadData();
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  /* ── 初始化 ────────────────────────────────── */
+  useEffect(() => {
+    loadData();
+    const tk = sessionStorage.getItem("adm_tk");
+    if (tk) {
+      fetch("/api/auth/verify", {
+        headers: { Authorization: `Bearer ${tk}` },
+      })
+        .then((r) => {
+          if (r.ok) {
+            setToken(tk);
+            setLoggedIn(true);
+          } else sessionStorage.removeItem("adm_tk");
+        })
+        .catch(() => {});
+    }
+  }, [loadData]);
+
+  // 路由监听
   useEffect(() => {
     const check = () => {
       setRoute(window.location.hash === ADMIN_HASH ? "admin" : "public");
@@ -753,38 +772,53 @@ useEffect(() => {
     const check = () => {
       const m = window.innerWidth <= 768;
       setIsMobile(m);
-      if (m) setSidebarOpen(false); else setMobileOpen(false);
+      if (m) setSidebarOpen(false);
+      else setMobileOpen(false);
     };
     check();
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // 进入设置 Tab 时拉取后台设置（含密码字段）
+  // 进入设置 Tab 时拉取后台设置
   useEffect(() => {
     if (loggedIn && adminTab === "settings") {
       adminFetch("GET", "/settings/admin")
-        .then(s => setSettingsForm(s))
+        .then((s) => setSettingsForm(s))
         .catch(() => {});
     }
   }, [loggedIn, adminTab]);
+
+  // 监听详情弹窗，加载照片
+  useEffect(() => {
+    if (selectedAlbum) {
+      fetchPhotos(selectedAlbum.id);
+    } else {
+      setPhotoList([]);
+    }
+  }, [selectedAlbum, fetchPhotos]);
 
   /* ── 认证操作 ──────────────────────────────── */
   async function handleLogin() {
     setLoginErr("");
     try {
-      const res  = await fetch("/api/auth/login", {
-        method:  "POST",
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ password: pwInput }),
+        body: JSON.stringify({ password: pwInput }),
       });
       const json = await res.json();
-      if (!res.ok) { setLoginErr(json.error || "登录失败"); return; }
+      if (!res.ok) {
+        setLoginErr(json.error || "登录失败");
+        return;
+      }
       setToken(json.token);
       sessionStorage.setItem("adm_tk", json.token);
       setLoggedIn(true);
       setPwInput("");
-    } catch { setLoginErr("网络错误，请稍后重试"); }
+    } catch {
+      setLoginErr("网络错误，请稍后重试");
+    }
   }
 
   function goPublic() {
@@ -792,478 +826,1007 @@ useEffect(() => {
     window.location.hash = "";
     setAdminTab("albums");
   }
+
   function handleLogout() {
-    setLoggedIn(false); setToken("");
+    setLoggedIn(false);
+    setToken("");
     sessionStorage.removeItem("adm_tk");
-    setPwInput(""); goPublic();
+    setPwInput("");
+    goPublic();
   }
 
   /* ── 相册 CRUD ─────────────────────────────── */
   function openAdd() {
     setEditingAlbum(null);
-    setForm({ title:"", cover:"", category: data.categories[0]||"", tags:"", description:"", photoCount:"" });
+    setForm({
+      title: "",
+      cover: "",
+      category: data.categories[0] || "",
+      tags: "",
+      description: "",
+      photoCount: "",
+    });
     setShowForm(true);
   }
+
   function openEdit(a) {
     setEditingAlbum(a);
-    setForm({ title: a.title, cover: a.cover, category: a.category,
-              tags: a.tags.join(", "), description: a.description,
-              photoCount: String(a.photoCount) });
+    setForm({
+      title: a.title,
+      cover: a.cover,
+      category: a.category,
+      tags: a.tags.join(", "),
+      description: a.description,
+      photoCount: String(a.photoCount),
+    });
     setShowForm(true);
   }
+
   async function saveAlbum() {
     if (!form.title.trim()) return;
     setSaving(true);
     try {
       const body = {
-        title:       form.title.trim(),
-        cover:       form.cover.trim(),
-        category:    form.category,
-        tags:        form.tags.split(/[,，]/).map(t => t.trim()).filter(Boolean),
+        title: form.title.trim(),
+        cover: form.cover.trim(),
+        category: form.category,
+        tags: form.tags
+          .split(/[,，]/)
+          .map((t) => t.trim())
+          .filter(Boolean),
         description: form.description.trim(),
-        photoCount:  parseInt(form.photoCount) || 0,
+        photoCount: parseInt(form.photoCount) || 0,
       };
-      if (editingAlbum) await adminFetch("PUT",  `/albums/${editingAlbum.id}`, body);
-      else              await adminFetch("POST", "/albums", body);
+      if (editingAlbum) await adminFetch("PUT", `/albums/${editingAlbum.id}`, body);
+      else await adminFetch("POST", "/albums", body);
       await loadData();
       setShowForm(false);
-    } catch (e) { alert(e.message); }
+    } catch (e) {
+      alert(e.message);
+    }
     setSaving(false);
   }
+
   async function doDelete(id) {
-    try { await adminFetch("DELETE", `/albums/${id}`); await loadData(); setDelConfirm(null); }
-    catch (e) { alert(e.message); }
+    try {
+      await adminFetch("DELETE", `/albums/${id}`);
+      await loadData();
+      setDelConfirm(null);
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   /* ── 分类 CRUD ─────────────────────────────── */
   async function addCat() {
-    const c = newCat.trim(); if (!c) return;
-    try { await adminFetch("POST", "/categories", { name: c }); await loadData(); setNewCat(""); }
-    catch (e) { alert(e.message); }
+    const c = newCat.trim();
+    if (!c) return;
+    try {
+      await adminFetch("POST", "/categories", { name: c });
+      await loadData();
+      setNewCat("");
+    } catch (e) {
+      alert(e.message);
+    }
   }
+
   async function removeCat(c) {
-    try { await adminFetch("DELETE", `/categories/${encodeURIComponent(c)}`); await loadData(); }
-    catch (e) { alert(e.message); }
+    try {
+      await adminFetch("DELETE", `/categories/${encodeURIComponent(c)}`);
+      await loadData();
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   /* ── 设置 ──────────────────────────────────── */
   async function saveSettings() {
     setSaving(true);
-    try { await adminFetch("PUT", "/settings", settingsForm); await loadData(); alert("✔ 设置已保存"); }
-    catch (e) { alert(e.message); }
+    try {
+      await adminFetch("PUT", "/settings", settingsForm);
+      await loadData();
+      alert("✔ 设置已保存");
+    } catch (e) {
+      alert(e.message);
+    }
     setSaving(false);
   }
 
   /* ── 导航辅助 ──────────────────────────────── */
-  function selectCat(c) { setActiveCategory(c); setActiveTag(null); setPage(1); if (isMobile) setMobileOpen(false); }
-  function selectTag(t) { setActiveTag(activeTag === t ? null : t); setPage(1); if (isMobile) setMobileOpen(false); }
-  function toggleSidebar() { if (isMobile) setMobileOpen(o => !o); else setSidebarOpen(o => !o); }
+  function selectCat(c) {
+    setActiveCategory(c);
+    setActiveTag(null);
+    setPage(1);
+    if (isMobile) setMobileOpen(false);
+  }
+
+  function selectTag(t) {
+    setActiveTag(activeTag === t ? null : t);
+    setPage(1);
+    if (isMobile) setMobileOpen(false);
+  }
+
+  function toggleSidebar() {
+    if (isMobile) setMobileOpen((o) => !o);
+    else setSidebarOpen((o) => !o);
+  }
 
   /* ── 加载中 ─────────────────────────────────── */
-  if (loading) return (
-    <><style>{css}</style>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",color:"var(--text3)",fontSize:14}}>
-      加载中…
-    </div></>
-  );
+  if (loading)
+    return (
+      <>
+        <style>{css}</style>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            height: "100vh",
+            color: "var(--text3)",
+            fontSize: 14,
+          }}
+        >
+          加载中…
+        </div>
+      </>
+    );
 
   /* ── 后台：登录页 ───────────────────────────── */
-  if (route === "admin" && !loggedIn) return (
-    <><style>{css}</style>
-    <div className="login-wrap">
-      <div className="login-box">
-        <div className="login-title">后台管理</div>
-        <div className="fg">
-          <label className="fl">管理密码</label>
-          <input type="password" className="fi" value={pwInput}
-            placeholder="输入密码" autoFocus
-            onChange={e => setPwInput(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") handleLogin(); }} />
-          {loginErr && <div className="err">{loginErr}</div>}
-        </div>
-        <div style={{display:"flex",gap:8,justifyContent:"space-between"}}>
-          <button className="btn" onClick={goPublic}>← 返回前台</button>
-          <button className="btn btn-dark" onClick={handleLogin}>登录</button>
-        </div>
-      </div>
-    </div></>
-  );
-
-  /* ── 后台：管理面板 ─────────────────────────── */
-  if (route === "admin" && loggedIn) {
-    const sa = [...data.albums].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  if (route === "admin" && !loggedIn)
     return (
-      <><style>{css}</style>
-      <div className="adm-layout">
-
-        {/* 侧边导航 */}
-        <div className="adm-sb">
-          <div className="adm-sb-title">📷 {data.settings.siteTitle}</div>
-          {[
-            { k:"albums",     icon:"🖼",  label:"相册管理" },
-            { k:"categories", icon:"📁",  label:"分类管理" },
-            { k:"settings",   icon:"⚙️", label:"系统设置" },
-          ].map(({ k, icon, label }) => (
-            <div key={k} className={`adm-nav ${adminTab===k?"active":""}`} onClick={() => setAdminTab(k)}>
-              {icon} {label}
+      <>
+        <style>{css}</style>
+        <div className="login-wrap">
+          <div className="login-box">
+            <div className="login-title">后台管理</div>
+            <div className="fg">
+              <label className="fl">管理密码</label>
+              <input
+                type="password"
+                className="fi"
+                value={pwInput}
+                placeholder="输入密码"
+                autoFocus
+                onChange={(e) => setPwInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleLogin();
+                }}
+              />
+              {loginErr && <div className="err">{loginErr}</div>}
             </div>
-          ))}
-          <div className="adm-spacer"/><div className="adm-divider"/>
-          <div className="adm-nav" onClick={goPublic}>← 前台预览</div>
-          <div className="adm-nav" onClick={handleLogout}>退出登录</div>
-        </div>
-
-        {/* 主内容 */}
-        <div className="adm-main">
-
-          {/* 相册管理 */}
-          {adminTab === "albums" && <>
-            <div className="adm-header">
-              <div className="adm-title">
-                相册管理
-                <span style={{fontSize:13,fontWeight:400,color:"var(--text3)"}}> ({data.albums.length})</span>
-              </div>
-              <button className="btn btn-dark btn-sm" onClick={openAdd}>＋ 新建相册</button>
-            </div>
-            {sa.length === 0
-              ? <div className="empty"><div className="empty-icon">🖼️</div><div className="empty-txt">还没有相册</div></div>
-              : sa.map(a => (
-                  <div key={a.id} className="list-item">
-                    {a.cover
-                      ? <img src={a.cover} alt="" className="list-thumb"/>
-                      : <div className="list-no-thumb">📷</div>}
-                    <div className="list-info">
-                      <div className="list-title">{a.title}</div>
-                      <div className="list-meta">{a.category} · {a.photoCount} 张 · {fmtDate(a.updatedAt)}</div>
-                    </div>
-                    <div className="list-actions">
-                      <button className="btn btn-sm" onClick={() => openEdit(a)}>编辑</button>
-                      {delConfirm === a.id
-                        ? <>
-                            <button className="btn btn-red btn-sm" onClick={() => doDelete(a.id)}>确认删除</button>
-                            <button className="btn btn-sm" onClick={() => setDelConfirm(null)}>取消</button>
-                          </>
-                        : <button className="btn btn-red btn-sm" onClick={() => setDelConfirm(a.id)}>删除</button>}
-                    </div>
-                  </div>
-                ))}
-          </>}
-
-          {/* 分类管理 */}
-          {adminTab === "categories" && <>
-            <div className="adm-header"><div className="adm-title">分类管理</div></div>
-            <div style={{display:"flex",gap:8,marginBottom:16}}>
-              <input className="fi" style={{maxWidth:200}} value={newCat}
-                placeholder="新分类名称"
-                onChange={e => setNewCat(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && addCat()} />
-              <button className="btn btn-dark btn-sm" onClick={addCat}>添加</button>
-            </div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-              {data.categories.map(c => (
-                <div key={c} className="cat-chip">
-                  <span>{c}</span>
-                  <span style={{fontSize:11,color:"var(--text3)"}}>
-                    {data.albums.filter(a => a.category === c).length} 个
-                  </span>
-                  <button className="cat-del" onClick={() => removeCat(c)}>×</button>
-                </div>
-              ))}
-            </div>
-          </>}
-
-          {/* 系统设置 */}
-          {adminTab === "settings" && <>
-            <div className="adm-header"><div className="adm-title">系统设置</div></div>
-            <div style={{maxWidth:380}}>
-              <div className="fg">
-                <label className="fl">网站标题</label>
-                <input className="fi" value={settingsForm.siteTitle || ""}
-                  onChange={e => setSettingsForm({ ...settingsForm, siteTitle: e.target.value })} />
-              </div>
-              <div className="fg">
-                <label className="fl">每页显示相册数</label>
-                <select className="fi" value={settingsForm.albumsPerPage || 6}
-                  onChange={e => setSettingsForm({ ...settingsForm, albumsPerPage: parseInt(e.target.value) })}>
-                  {[4,6,8,9,12,15].map(n => <option key={n} value={n}>{n} 个</option>)}
-                </select>
-              </div>
-              <div className="fg">
-                <label className="fl">管理密码</label>
-                <input className="fi" type="text" value={settingsForm.adminPassword || ""}
-                  onChange={e => setSettingsForm({ ...settingsForm, adminPassword: e.target.value })}
-                  placeholder="修改密码（留空不变）" />
-              </div>
-              <div className="fg" style={{background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:6,padding:"8px 12px"}}>
-                <div style={{fontSize:11,color:"#92400E"}}>
-                  💡 后台访问：在 URL 末尾添加 <strong>#admin</strong> 即可进入管理页
-                </div>
-              </div>
-              <button className="btn btn-dark" disabled={saving} onClick={saveSettings}>
-                {saving ? <><span className="spin"/> 保存中…</> : "保存设置"}
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                justifyContent: "space-between",
+              }}
+            >
+              <button className="btn" onClick={goPublic}>
+                ← 返回前台
               </button>
-            </div>
-          </>}
-        </div>
-      </div>
-
-      {/* 新建/编辑表单 */}
-      {showForm && (
-        <div className="f-overlay" onClick={e => e.target === e.currentTarget && setShowForm(false)}>
-          <div className="f-box">
-            <div className="f-title">{editingAlbum ? "编辑相册" : "新建相册"}</div>
-            <div className="fg">
-              <label className="fl">相册名称 *</label>
-              <input className="fi" value={form.title} placeholder="输入相册名称"
-                onChange={e => setForm({ ...form, title: e.target.value })} />
-            </div>
-            <div className="fg">
-              <label className="fl">封面图片 URL</label>
-              <input className="fi" value={form.cover} placeholder="https://..."
-                onChange={e => setForm({ ...form, cover: e.target.value })} />
-              {form.cover && (
-                <img src={form.cover} alt="" className="preview-img"
-                  onError={e => (e.target.style.display = "none")} />
-              )}
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-              <div className="fg">
-                <label className="fl">分类</label>
-                <select className="fi" value={form.category}
-                  onChange={e => setForm({ ...form, category: e.target.value })}>
-                  {data.categories.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-              <div className="fg">
-                <label className="fl">照片数量</label>
-                <input className="fi" type="number" min="0" value={form.photoCount}
-                  placeholder="0" onChange={e => setForm({ ...form, photoCount: e.target.value })} />
-              </div>
-            </div>
-            <div className="fg">
-              <label className="fl">标签（逗号分隔）</label>
-              <input className="fi" value={form.tags} placeholder="标签1, 标签2"
-                onChange={e => setForm({ ...form, tags: e.target.value })} />
-            </div>
-            <div className="fg">
-              <label className="fl">相册简介</label>
-              <textarea className="fi" value={form.description} placeholder="描述这个相册…"
-                onChange={e => setForm({ ...form, description: e.target.value })} />
-            </div>
-            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-              <button className="btn" onClick={() => setShowForm(false)}>取消</button>
-              <button className="btn btn-dark" disabled={saving} onClick={saveAlbum}>
-                {saving ? <><span className="spin"/> 保存中…</> : "保存"}
+              <button className="btn btn-dark" onClick={handleLogin}>
+                登录
               </button>
             </div>
           </div>
         </div>
-      )}
+      </>
+    );
+
+  /* ── 后台：管理面板 ─────────────────────────── */
+  if (route === "admin" && loggedIn) {
+    const sa = [...data.albums].sort(
+      (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
+    );
+    return (
+      <>
+        <style>{css}</style>
+        <div className="adm-layout">
+          {/* 侧边导航 */}
+          <div className="adm-sb">
+            <div className="adm-sb-title">📷 {data.settings.siteTitle}</div>
+            {[
+              { k: "albums", icon: "🖼", label: "相册管理" },
+              { k: "categories", icon: "📁", label: "分类管理" },
+              { k: "settings", icon: "⚙️", label: "系统设置" },
+            ].map(({ k, icon, label }) => (
+              <div
+                key={k}
+                className={`adm-nav ${adminTab === k ? "active" : ""}`}
+                onClick={() => setAdminTab(k)}
+              >
+                {icon} {label}
+              </div>
+            ))}
+            <div className="adm-spacer" />
+            <div className="adm-divider" />
+            <div className="adm-nav" onClick={goPublic}>
+              ← 前台预览
+            </div>
+            <div className="adm-nav" onClick={handleLogout}>
+              退出登录
+            </div>
+          </div>
+
+          {/* 主内容 */}
+          <div className="adm-main">
+            {/* 相册管理 */}
+            {adminTab === "albums" && (
+              <>
+                <div className="adm-header">
+                  <div className="adm-title">
+                    相册管理
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 400,
+                        color: "var(--text3)",
+                      }}
+                    >
+                      {" "}
+                      ({data.albums.length})
+                    </span>
+                  </div>
+                  <button className="btn btn-dark btn-sm" onClick={openAdd}>
+                    ＋ 新建相册
+                  </button>
+                </div>
+                {sa.length === 0 ? (
+                  <div className="empty">
+                    <div className="empty-icon">🖼️</div>
+                    <div className="empty-txt">还没有相册</div>
+                  </div>
+                ) : (
+                  sa.map((a) => (
+                    <div key={a.id} className="list-item">
+                      {a.cover ? (
+                        <img src={a.cover} alt="" className="list-thumb" />
+                      ) : (
+                        <div className="list-no-thumb">📷</div>
+                      )}
+                      <div className="list-info">
+                        <div className="list-title">{a.title}</div>
+                        <div className="list-meta">
+                          {a.category} · {a.photoCount} 张 ·{" "}
+                          {fmtDate(a.updatedAt)}
+                        </div>
+                      </div>
+                      <div className="list-actions">
+                        <button
+                          className="btn btn-sm"
+                          onClick={() => openEdit(a)}
+                        >
+                          编辑
+                        </button>
+                        {delConfirm === a.id ? (
+                          <>
+                            <button
+                              className="btn btn-red btn-sm"
+                              onClick={() => doDelete(a.id)}
+                            >
+                              确认删除
+                            </button>
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => setDelConfirm(null)}
+                            >
+                              取消
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            className="btn btn-red btn-sm"
+                            onClick={() => setDelConfirm(a.id)}
+                          >
+                            删除
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </>
+            )}
+
+            {/* 分类管理 */}
+            {adminTab === "categories" && (
+              <>
+                <div className="adm-header">
+                  <div className="adm-title">分类管理</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                  <input
+                    className="fi"
+                    style={{ maxWidth: 200 }}
+                    value={newCat}
+                    placeholder="新分类名称"
+                    onChange={(e) => setNewCat(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addCat()}
+                  />
+                  <button className="btn btn-dark btn-sm" onClick={addCat}>
+                    添加
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {data.categories.map((c) => (
+                    <div key={c} className="cat-chip">
+                      <span>{c}</span>
+                      <span
+                        style={{ fontSize: 11, color: "var(--text3)" }}
+                      >
+                        {data.albums.filter((a) => a.category === c).length}{" "}
+                        个
+                      </span>
+                      <button
+                        className="cat-del"
+                        onClick={() => removeCat(c)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* 系统设置 */}
+            {adminTab === "settings" && (
+              <>
+                <div className="adm-header">
+                  <div className="adm-title">系统设置</div>
+                </div>
+                <div style={{ maxWidth: 380 }}>
+                  <div className="fg">
+                    <label className="fl">网站标题</label>
+                    <input
+                      className="fi"
+                      value={settingsForm.siteTitle || ""}
+                      onChange={(e) =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          siteTitle: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="fg">
+                    <label className="fl">每页显示相册数</label>
+                    <select
+                      className="fi"
+                      value={settingsForm.albumsPerPage || 6}
+                      onChange={(e) =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          albumsPerPage: parseInt(e.target.value),
+                        })
+                      }
+                    >
+                      {[4, 6, 8, 9, 12, 15].map((n) => (
+                        <option key={n} value={n}>
+                          {n} 个
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="fg">
+                    <label className="fl">管理密码</label>
+                    <input
+                      className="fi"
+                      type="text"
+                      value={settingsForm.adminPassword || ""}
+                      onChange={(e) =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          adminPassword: e.target.value,
+                        })
+                      }
+                      placeholder="修改密码（留空不变）"
+                    />
+                  </div>
+                  <div
+                    className="fg"
+                    style={{
+                      background: "#FFFBEB",
+                      border: "1px solid #FDE68A",
+                      borderRadius: 6,
+                      padding: "8px 12px",
+                    }}
+                  >
+                    <div style={{ fontSize: 11, color: "#92400E" }}>
+                      💡 后台访问：在 URL 末尾添加{" "}
+                      <strong>#admin</strong> 即可进入管理页
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn-dark"
+                    disabled={saving}
+                    onClick={saveSettings}
+                  >
+                    {saving ? (
+                      <>
+                        <span className="spin" /> 保存中…
+                      </>
+                    ) : (
+                      "保存设置"
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* 新建/编辑表单 */}
+        {showForm && (
+          <div
+            className="f-overlay"
+            onClick={(e) =>
+              e.target === e.currentTarget && setShowForm(false)
+            }
+          >
+            <div className="f-box">
+              <div className="f-title">
+                {editingAlbum ? "编辑相册" : "新建相册"}
+              </div>
+              <div className="fg">
+                <label className="fl">相册名称 *</label>
+                <input
+                  className="fi"
+                  value={form.title}
+                  placeholder="输入相册名称"
+                  onChange={(e) => setForm({ ...form, title: e.target.value })}
+                />
+              </div>
+              <div className="fg">
+                <label className="fl">封面图片 URL</label>
+                <input
+                  className="fi"
+                  value={form.cover}
+                  placeholder="https://..."
+                  onChange={(e) => setForm({ ...form, cover: e.target.value })}
+                />
+                {form.cover && (
+                  <img
+                    src={form.cover}
+                    alt=""
+                    className="preview-img"
+                    onError={(e) => (e.target.style.display = "none")}
+                  />
+                )}
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 10,
+                }}
+              >
+                <div className="fg">
+                  <label className="fl">分类</label>
+                  <select
+                    className="fi"
+                    value={form.category}
+                    onChange={(e) =>
+                      setForm({ ...form, category: e.target.value })
+                    }
+                  >
+                    {data.categories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="fg">
+                  <label className="fl">照片数量</label>
+                  <input
+                    className="fi"
+                    type="number"
+                    min="0"
+                    value={form.photoCount}
+                    placeholder="0"
+                    onChange={(e) =>
+                      setForm({ ...form, photoCount: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+              <div className="fg">
+                <label className="fl">标签（逗号分隔）</label>
+                <input
+                  className="fi"
+                  value={form.tags}
+                  placeholder="标签1, 标签2"
+                  onChange={(e) =>
+                    setForm({ ...form, tags: e.target.value })
+                  }
+                />
+              </div>
+              <div className="fg">
+                <label className="fl">相册简介</label>
+                <textarea
+                  className="fi"
+                  value={form.description}
+                  placeholder="描述这个相册…"
+                  onChange={(e) =>
+                    setForm({ ...form, description: e.target.value })
+                  }
+                />
+              </div>
+              <div
+                style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
+              >
+                <button className="btn" onClick={() => setShowForm(false)}>
+                  取消
+                </button>
+                <button
+                  className="btn btn-dark"
+                  disabled={saving}
+                  onClick={saveAlbum}
+                >
+                  {saving ? (
+                    <>
+                      <span className="spin" /> 保存中…
+                    </>
+                  ) : (
+                    "保存"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </>
     );
   }
 
   /* ── 前台：公开展示页 ───────────────────────── */
   const perPage = data.settings.albumsPerPage;
-  const sorted  = [...data.albums].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-  let filtered  = activeCategory === "全部" ? sorted : sorted.filter(a => a.category === activeCategory);
-  if (activeTag) filtered = filtered.filter(a => a.tags.includes(activeTag));
+  const sorted = [...data.albums].sort(
+    (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
+  );
+  let filtered =
+    activeCategory === "全部"
+      ? sorted
+      : sorted.filter((a) => a.category === activeCategory);
+  if (activeTag) filtered = filtered.filter((a) => a.tags.includes(activeTag));
   if (searchQ.trim()) {
     const q = searchQ.trim().toLowerCase();
-    filtered = filtered.filter(a =>
-      a.title.toLowerCase().includes(q) ||
-      a.description.toLowerCase().includes(q) ||
-      a.tags.some(t => t.toLowerCase().includes(q))
+    filtered = filtered.filter(
+      (a) =>
+        a.title.toLowerCase().includes(q) ||
+        a.description.toLowerCase().includes(q) ||
+        a.tags.some((t) => t.toLowerCase().includes(q))
     );
   }
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
-  const paged      = filtered.slice((page - 1) * perPage, page * perPage);
-  const allTags    = [...new Set(sorted.flatMap(a => a.tags))];
-  const catCounts  = Object.fromEntries(data.categories.map(c => [c, data.albums.filter(a => a.category === c).length]));
-  const hasFilter  = activeCategory !== "全部" || activeTag || searchQ.trim();
+  const paged = filtered.slice((page - 1) * perPage, page * perPage);
+  const allTags = [...new Set(sorted.flatMap((a) => a.tags))];
+  const catCounts = Object.fromEntries(
+    data.categories.map((c) => [
+      c,
+      data.albums.filter((a) => a.category === c).length,
+    ])
+  );
+  const hasFilter =
+    activeCategory !== "全部" || activeTag || searchQ.trim();
   const sidebarVisible = isMobile ? mobileOpen : sidebarOpen;
 
   return (
-    <><style>{css}</style>
-    <div>
-      {/* 顶部导航栏 */}
-      <header className="hdr">
-        <div className="hdr-left">
-          <button className={`sidebar-toggle ${sidebarVisible ? "open" : ""}`}
-            onClick={toggleSidebar} aria-label="切换侧栏">
-            <span/><span/><span/>
-          </button>
-          <div className="hdr-title">📷 {data.settings.siteTitle}</div>
-        </div>
-        <div className="hdr-search">
-          <span className="hdr-search-icon">🔍</span>
-          <input value={searchQ} placeholder="搜索相册…"
-            onChange={e => { setSearchQ(e.target.value); setPage(1); }} />
-        </div>
-        <div style={{width:1}}/>
-      </header>
-
-      <div className="layout">
-        {isMobile && mobileOpen && (
-          <div className="sidebar-overlay" onClick={() => setMobileOpen(false)} />
-        )}
-
-        {/* 侧边栏 */}
-        <div className={`sidebar-wrap ${isMobile ? (mobileOpen ? "mobile-open" : "") : (sidebarOpen ? "" : "collapsed")}`}>
-          <div className="sidebar">
-            <div>
-              <div className="sb-section-label">分类</div>
-              <div className={`cat-item ${activeCategory === "全部" ? "active" : ""}`}
-                onClick={() => selectCat("全部")}>
-                <span>全部</span>
-                <span className="cat-count">{data.albums.length}</span>
-              </div>
-              {data.categories.map(c => (
-                <div key={c} className={`cat-item ${activeCategory === c ? "active" : ""}`}
-                  onClick={() => selectCat(c)}>
-                  <span>{c}</span>
-                  <span className="cat-count">{catCounts[c] || 0}</span>
-                </div>
-              ))}
+    <>
+      <style>{css}</style>
+      <div>
+        {/* 顶部导航栏 */}
+        <header className="hdr">
+          <div className="hdr-left">
+            <button
+              className={`sidebar-toggle ${sidebarVisible ? "open" : ""}`}
+              onClick={toggleSidebar}
+              aria-label="切换侧栏"
+            >
+              <span />
+              <span />
+              <span />
+            </button>
+            <div className="hdr-title">
+              📷 {data.settings.siteTitle}
             </div>
-            {allTags.length > 0 && (
+          </div>
+          <div className="hdr-search">
+            <span className="hdr-search-icon">🔍</span>
+            <input
+              value={searchQ}
+              placeholder="搜索相册…"
+              onChange={(e) => {
+                setSearchQ(e.target.value);
+                setPage(1);
+              }}
+            />
+          </div>
+          <div style={{ width: 1 }} />
+        </header>
+
+        <div className="layout">
+          {isMobile && mobileOpen && (
+            <div
+              className="sidebar-overlay"
+              onClick={() => setMobileOpen(false)}
+            />
+          )}
+
+          {/* 侧边栏 */}
+          <div
+            className={`sidebar-wrap ${
+              isMobile
+                ? mobileOpen
+                  ? "mobile-open"
+                  : ""
+                : sidebarOpen
+                ? ""
+                : "collapsed"
+            }`}
+          >
+            <div className="sidebar">
               <div>
-                <div className="sb-section-label">标签</div>
-                <div className="tag-wrap">
-                  {allTags.map(t => (
-                    <button key={t} className={`tag-btn ${activeTag === t ? "active" : ""}`}
-                      onClick={() => selectTag(t)}>#{t}</button>
-                  ))}
+                <div className="sb-section-label">分类</div>
+                <div
+                  className={`cat-item ${
+                    activeCategory === "全部" ? "active" : ""
+                  }`}
+                  onClick={() => selectCat("全部")}
+                >
+                  <span>全部</span>
+                  <span className="cat-count">
+                    {data.albums.length}
+                  </span>
                 </div>
+                {data.categories.map((c) => (
+                  <div
+                    key={c}
+                    className={`cat-item ${
+                      activeCategory === c ? "active" : ""
+                    }`}
+                    onClick={() => selectCat(c)}
+                  >
+                    <span>{c}</span>
+                    <span className="cat-count">
+                      {catCounts[c] || 0}
+                    </span>
+                  </div>
+                ))}
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* 主内容区 */}
-        <div className="main">
-          <div className="main-header">
-            <div className="main-info">
-              {activeTag      && <><strong>#{activeTag}</strong> · </>}
-              {activeCategory !== "全部" && !activeTag && <><strong>{activeCategory}</strong> · </>}
-              {searchQ.trim() && <><strong>"{searchQ}"</strong> · </>}
-              {filtered.length} 个相册
+              {allTags.length > 0 && (
+                <div>
+                  <div className="sb-section-label">标签</div>
+                  <div className="tag-wrap">
+                    {allTags.map((t) => (
+                      <button
+                        key={t}
+                        className={`tag-btn ${
+                          activeTag === t ? "active" : ""
+                        }`}
+                        onClick={() => selectTag(t)}
+                      >
+                        #{t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-            {hasFilter && (
-              <button className="clear-btn" onClick={() => {
-                setActiveCategory("全部"); setActiveTag(null); setSearchQ(""); setPage(1);
-              }}>✕ 清除筛选</button>
-            )}
           </div>
 
-          {paged.length === 0
-            ? <div className="empty"><div className="empty-icon">🔍</div><div className="empty-txt">没有找到相册</div></div>
-            : <div className="grid">
-                {paged.map(a => (
-                  <div key={a.id} className="card" onClick={() => setSelectedAlbum(a)}>
-                    {a.cover
-                      ? <img src={a.cover} alt={a.title} className="card-img" loading="lazy"/>
-                      : <div className="card-no-img">📷</div>}
+          {/* 主内容区 */}
+          <div className="main">
+            <div className="main-header">
+              <div className="main-info">
+                {activeTag && (
+                  <>
+                    <strong>#{activeTag}</strong> ·{" "}
+                  </>
+                )}
+                {activeCategory !== "全部" && !activeTag && (
+                  <>
+                    <strong>{activeCategory}</strong> ·{" "}
+                  </>
+                )}
+                {searchQ.trim() && (
+                  <>
+                    <strong>"{searchQ}"</strong> ·{" "}
+                  </>
+                )}
+                {filtered.length} 个相册
+              </div>
+              {hasFilter && (
+                <button
+                  className="clear-btn"
+                  onClick={() => {
+                    setActiveCategory("全部");
+                    setActiveTag(null);
+                    setSearchQ("");
+                    setPage(1);
+                  }}
+                >
+                  ✕ 清除筛选
+                </button>
+              )}
+            </div>
+
+            {paged.length === 0 ? (
+              <div className="empty">
+                <div className="empty-icon">🔍</div>
+                <div className="empty-txt">没有找到相册</div>
+              </div>
+            ) : (
+              <div className="grid">
+                {paged.map((a) => (
+                  <div
+                    key={a.id}
+                    className="card"
+                    onClick={() => setSelectedAlbum(a)}
+                  >
+                    {a.cover ? (
+                      <img
+                        src={a.cover}
+                        alt={a.title}
+                        className="card-img"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="card-no-img">📷</div>
+                    )}
                     <div className="card-body">
                       <div className="card-title">{a.title}</div>
                       <div className="card-footer">
                         <span className="badge">{a.category}</span>
-                        <span className="card-count">{a.photoCount} 张</span>
+                        <span className="card-count">
+                          {a.photoCount} 张
+                        </span>
                       </div>
-                      <div className="card-date">{fmtDate(a.updatedAt)}</div>
+                      <div className="card-date">
+                        {fmtDate(a.updatedAt)}
+                      </div>
                     </div>
                   </div>
                 ))}
-              </div>}
+              </div>
+            )}
 
-          {totalPages > 1 && (
-            <div className="pager">
-              <button className="pager-btn" disabled={page === 1} onClick={() => setPage(p => p - 1)}>‹</button>
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-                <button key={p} className={`pager-btn ${p === page ? "active" : ""}`} onClick={() => setPage(p)}>{p}</button>
-              ))}
-              <button className="pager-btn" disabled={page === totalPages} onClick={() => setPage(p => p + 1)}>›</button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-
-    {/* 相册详情弹窗 */}
-    {selectedAlbum && (
-  <div className="overlay" onClick={e => e.target === e.currentTarget && setSelectedAlbum(null)}>
-    <div className="modal" style={{maxWidth: '700px'}}>
-      {selectedAlbum.cover && (
-        <img src={selectedAlbum.cover} alt="" className="modal-img" />
-      )}
-      <div className="modal-body">
-        {/* ---- 保留原有的标题、描述、标签 ---- */}
-        <div className="modal-top">
-          <div className="modal-title">{selectedAlbum.title}</div>
-          <button className="modal-close" onClick={() => setSelectedAlbum(null)}>✕</button>
-        </div>
-        <div className="modal-meta">
-          <span className="badge">{selectedAlbum.category}</span>
-          <span style={{fontSize:12,color:"var(--text3)"}}>{photoList.length} 张照片</span>
-          <span style={{fontSize:12,color:"var(--text3)"}}>更新 {fmtDate(selectedAlbum.updatedAt)}</span>
-        </div>
-        {selectedAlbum.description && (
-          <div className="modal-desc">{selectedAlbum.description}</div>
-        )}
-        {selectedAlbum.tags.length > 0 && (
-          <div className="modal-tags">
-            {selectedAlbum.tags.map(t => (
-              <button key={t} className="tag-btn"
-                onClick={() => { setSelectedAlbum(null); selectTag(t); }}>
-                #{t}
-              </button>
-            ))}
-          </div>
-        )}
-        {/* ---- 照片内容区域 ---- */}
-        <div style={{marginTop:'1.5rem', borderTop:'1px solid var(--border)', paddingTop:'1rem'}}>
-          <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.75rem'}}>
-            <strong>相册内容 ({photoList.length})</strong>
-            {loggedIn && (
-              <label className="btn btn-dark btn-sm" style={{cursor:'pointer'}}>
-                {uploading ? '上传中...' : '＋ 添加照片'}
-                <input type="file" accept="image/*" style={{display:'none'}}
-                  onChange={e => {
-                    if (e.target.files[0]) handleUpload(selectedAlbum.id, e.target.files[0]);
-                    e.target.value = '';
-                  }} />
-              </label>
+            {totalPages > 1 && (
+              <div className="pager">
+                <button
+                  className="pager-btn"
+                  disabled={page === 1}
+                  onClick={() => setPage((p) => p - 1)}
+                >
+                  ‹
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map(
+                  (p) => (
+                    <button
+                      key={p}
+                      className={`pager-btn ${
+                        p === page ? "active" : ""
+                      }`}
+                      onClick={() => setPage(p)}
+                    >
+                      {p}
+                    </button>
+                  )
+                )}
+                <button
+                  className="pager-btn"
+                  disabled={page === totalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  ›
+                </button>
+              </div>
             )}
           </div>
-          {photoList.length === 0 ? (
-            <div className="empty" style={{padding:'1rem'}}>
-              <div className="empty-icon">📷</div>
-              <div className="empty-txt">此相册还没有照片</div>
-            </div>
-          ) : (
-            <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(120px, 1fr))', gap:'0.5rem'}}>
-              {photoList.map(p => (
-                <div key={p.id} style={{position:'relative', borderRadius:'6px', overflow:'hidden', border:'1px solid var(--border)'}}>
-                  <img src={p.url} alt="" style={{width:'100%', aspectRatio:'1', objectFit:'cover'}} loading="lazy" />
-                  {loggedIn && (
-                    <button
-                      onClick={() => handleDeletePhoto(p.id, selectedAlbum.id)}
-                      style={{
-                        position:'absolute', top:'4px', right:'4px',
-                        background:'rgba(0,0,0,0.5)', color:'#fff', border:'none',
-                        borderRadius:'50%', width:'20px', height:'20px', fontSize:'12px',
-                        cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center'
-                      }}>×</button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
-    </div>
-  </div>
-)}
+
+      {/* ── 相册详情弹窗（含照片网格）── */}
+      {selectedAlbum && (
+        <div
+          className="overlay"
+          onClick={(e) =>
+            e.target === e.currentTarget && setSelectedAlbum(null)
+          }
+        >
+          <div
+            className="modal"
+            style={{ maxWidth: "700px" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {selectedAlbum.cover && (
+              <img
+                src={selectedAlbum.cover}
+                alt=""
+                className="modal-img"
+              />
+            )}
+            <div className="modal-body">
+              {/* 标题和关闭按钮 */}
+              <div className="modal-top">
+                <div className="modal-title">
+                  {selectedAlbum.title}
+                </div>
+                <button
+                  className="modal-close"
+                  onClick={() => setSelectedAlbum(null)}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* 元数据 */}
+              <div className="modal-meta">
+                <span className="badge">
+                  {selectedAlbum.category}
+                </span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--text3)",
+                  }}
+                >
+                  {photoList.length} 张照片
+                </span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--text3)",
+                  }}
+                >
+                  更新 {fmtDate(selectedAlbum.updatedAt)}
+                </span>
+              </div>
+
+              {/* 描述 */}
+              {selectedAlbum.description && (
+                <div className="modal-desc">
+                  {selectedAlbum.description}
+                </div>
+              )}
+
+              {/* 标签 */}
+              {selectedAlbum.tags.length > 0 && (
+                <div className="modal-tags">
+                  {selectedAlbum.tags.map((t) => (
+                    <button
+                      key={t}
+                      className="tag-btn"
+                      onClick={() => {
+                        setSelectedAlbum(null);
+                        selectTag(t);
+                      }}
+                    >
+                      #{t}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* ── 照片内容区域 ── */}
+              <div
+                style={{
+                  marginTop: "1.5rem",
+                  borderTop: "1px solid var(--border)",
+                  paddingTop: "1rem",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: "0.75rem",
+                  }}
+                >
+                  <strong>相册内容 ({photoList.length})</strong>
+                  {loggedIn && (
+                    <label
+                      className="btn btn-dark btn-sm"
+                      style={{ cursor: "pointer" }}
+                    >
+                      {uploading ? "上传中..." : "＋ 添加照片"}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          if (e.target.files[0])
+                            handleUpload(
+                              selectedAlbum.id,
+                              e.target.files[0]
+                            );
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                  )}
+                </div>
+                {photoList.length === 0 ? (
+                  <div
+                    className="empty"
+                    style={{ padding: "1rem" }}
+                  >
+                    <div className="empty-icon">📷</div>
+                    <div className="empty-txt">
+                      此相册还没有照片
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "repeat(auto-fill, minmax(120px, 1fr))",
+                      gap: "0.5rem",
+                    }}
+                  >
+                    {photoList.map((p) => (
+                      <div
+                        key={p.id}
+                        style={{
+                          position: "relative",
+                          borderRadius: "6px",
+                          overflow: "hidden",
+                          border: "1px solid var(--border)",
+                        }}
+                      >
+                        <img
+                          src={p.url}
+                          alt=""
+                          style={{
+                            width: "100%",
+                            aspectRatio: "1",
+                            objectFit: "cover",
+                          }}
+                          loading="lazy"
+                        />
+                        {loggedIn && (
+                          <button
+                            onClick={() =>
+                              handleDeletePhoto(
+                                p.id,
+                                selectedAlbum.id
+                              )
+                            }
+                            style={{
+                              position: "absolute",
+                              top: "4px",
+                              right: "4px",
+                              background: "rgba(0,0,0,0.5)",
+                              color: "#fff",
+                              border: "none",
+                              borderRadius: "50%",
+                              width: "20px",
+                              height: "20px",
+                              fontSize: "12px",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 APPJSX
 
 # ────────────────────────────────────────
