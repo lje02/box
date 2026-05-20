@@ -69,7 +69,7 @@ cat > package.json << 'PKGJSON'
     "build:start": "vite build && node server.js"
   },
   "dependencies": {
-    "better-sqlite3": "^9.6.0",
+    "better-sqlite3": "^11.7.0",
     "express":        "^4.19.2",
     "jsonwebtoken":   "^9.0.2",
     "react":          "^18.3.1",
