@@ -74,6 +74,7 @@ cat > package.json << 'PKGJSON'
     "jsonwebtoken":   "^9.0.2",
     "react":          "^18.3.1",
     "react-dom":      "^18.3.1"
+    "multer":         "^1.4.5-lts.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
