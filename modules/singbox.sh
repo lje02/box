@@ -1799,7 +1799,7 @@ while true; do
     echo -e "  ${GREEN}1.${PLAIN} 安装/重装 sing-box"
     echo -e "  ${GREEN}2.${PLAIN} 节点快速配置"
     echo -e "  ${GREEN}3.${PLAIN} 配置/分享链接查看"
-    echo -e "  ${GREEN}4.${PLAIN} 分流/落地/多跳转/设置/管理"
+    echo -e "  ${GREEN}4.${PLAIN} 多分流/多落地/多跳转/设置/管理"
     echo -e "  ${GREEN}5.${PLAIN} 更新sing-box内核"
     echo -e "  ${GREEN}6.${PLAIN} 备份/还原配置"
     echo -e "  ${GREEN}7.${PLAIN} 开启 BBR 网络加速"
