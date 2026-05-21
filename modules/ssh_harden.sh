@@ -1,6 +1,12 @@
 #!/bin/bash
 # SSH 安全加固模块（密钥管理 + 关闭密码登录）
 
+# ---------- 0. 权限检查 ----------
+if [ "$(id -u)" -ne 0 ]; then
+    printf "\033[31m✘ 错误：请使用 root 权限执行此脚本 (可以先使用 sudo -i 切换)\033[0m\n"
+    exit 1
+fi
+
 if [ -z "$VPS_COMMON_LOADED" ]; then
     source /usr/local/share/vn_modules/common.sh 2>/dev/null || {
         echo "无法加载公共函数库"
@@ -86,7 +92,7 @@ add_pubkey_local() {
     local pubkey=""
     case $src_choice in
         1)
-            printf "请粘贴公钥内容 (以 ssh-rsa/ssh-ed25519 开头)，粘贴后按 Ctrl+D 结束:\n"
+            printf "请粘贴公钥内容 (以 ssh-rsa/ssh-ed25519/ecdsa-sha2 开头)，粘贴后按 Ctrl+D 结束:\n"
             pubkey=$(cat)
             ;;
         2)
@@ -140,14 +146,14 @@ disable_password_auth() {
     printf "${RED}   请确保你已经添加了公钥并测试成功，否则会锁死服务器！${NC}\n"
     echo ""
 
-    # 1. 检查是否有授权密钥
+    # 1. 检查是否有授权密钥 (兼容 RSA, Ed25519, ECDSA)
     if [ ! -f ~/.ssh/authorized_keys ] || [ ! -s ~/.ssh/authorized_keys ]; then
         printf "${RED}✘ 错误：未找到任何授权的公钥！${NC}\n"
         printf "   请先使用菜单选项 2 添加公钥，或手动创建 ~/.ssh/authorized_keys\n"
         read -p "按回车键继续..." dummy
         return
     fi
-    local key_count=$(grep -c '^ssh-' ~/.ssh/authorized_keys 2>/dev/null || echo 0)
+    local key_count=$(grep -E -c '^(ssh-|ecdsa-sha2-)' ~/.ssh/authorized_keys 2>/dev/null || echo 0)
     if [ "$key_count" -eq 0 ]; then
         printf "${RED}✘ 错误：authorized_keys 中没有有效的公钥！${NC}\n"
         read -p "按回车键继续..." dummy
@@ -164,13 +170,22 @@ disable_password_auth() {
 
     # 2. 确保 PubkeyAuthentication 是开启的（关键）
     sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' "$SSH_CONF"
-    grep -q '^PubkeyAuthentication' "$SSH_CONF" || echo "PubkeyAuthentication yes" >> "$SSH_CONF"
+    grep -q '^PubkeyAuthentication yes' "$SSH_CONF" || echo "PubkeyAuthentication yes" >> "$SSH_CONF"
 
-    # 3. 关闭密码登录
-    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' "$SSH_CONF"
-    sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$SSH_CONF"
+    # 3. 关闭密码登录和交互式键盘登录（带保底机制）
+    for param in PasswordAuthentication ChallengeResponseAuthentication KbdInteractiveAuthentication; do
+        sed -i "s/^#*${param}.*/${param} no/" "$SSH_CONF"
+        grep -q "^${param} no" "$SSH_CONF" || echo "${param} no" >> "$SSH_CONF"
+    done
 
-    # 4. 语法检查
+    # 4. 处理新版系统及云厂商的附加配置目录覆盖问题
+    if [ -d /etc/ssh/sshd_config.d ]; then
+        find /etc/ssh/sshd_config.d/ -type f -name "*.conf" -exec sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' {} \;
+        find /etc/ssh/sshd_config.d/ -type f -name "*.conf" -exec sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' {} \;
+        find /etc/ssh/sshd_config.d/ -type f -name "*.conf" -exec sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication no/' {} \;
+    fi
+
+    # 5. 语法检查
     printf "${YELLOW}正在检查配置文件语法...${NC}\n"
     if ! sshd -t 2>/dev/null; then
         printf "${RED}✘ SSH 配置文件语法错误！已中止操作，并恢复备份。${NC}\n"
@@ -180,7 +195,7 @@ disable_password_auth() {
     fi
     printf "${GREEN}配置语法正确。${NC}\n"
 
-    # 5. 询问重启
+    # 6. 询问重启
     printf "${YELLOW}即将重启 SSH 服务...${NC}\n"
     read -p "继续？[y/N]: " confirm2
     if [[ ! $confirm2 =~ ^[Yy]$ ]]; then
@@ -189,7 +204,7 @@ disable_password_auth() {
         return
     fi
 
-    # 6. 尝试重启，同时兼容 ssh / sshd 两种服务名
+    # 7. 尝试重启，同时兼容 ssh / sshd 两种服务名
     local restarted=false
     if systemctl restart ssh 2>/dev/null; then
         restarted=true
@@ -222,9 +237,18 @@ enable_password_auth() {
 
     backup_ssh
 
-    sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' "$SSH_CONF"
-    sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication yes/' "$SSH_CONF"
-    sed -i 's/^#*UsePAM.*/UsePAM yes/' "$SSH_CONF"
+    # 恢复主配置
+    for param in PasswordAuthentication ChallengeResponseAuthentication KbdInteractiveAuthentication UsePAM; do
+        sed -i "s/^#*${param}.*/${param} yes/" "$SSH_CONF"
+        grep -q "^${param} yes" "$SSH_CONF" || echo "${param} yes" >> "$SSH_CONF"
+    done
+
+    # 恢复目录配置
+    if [ -d /etc/ssh/sshd_config.d ]; then
+        find /etc/ssh/sshd_config.d/ -type f -name "*.conf" -exec sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' {} \;
+        find /etc/ssh/sshd_config.d/ -type f -name "*.conf" -exec sed -i 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication yes/' {} \;
+        find /etc/ssh/sshd_config.d/ -type f -name "*.conf" -exec sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' {} \;
+    fi
 
     systemctl restart sshd 2>/dev/null || service sshd restart 2>/dev/null || /etc/init.d/ssh restart 2>/dev/null
     printf "${GREEN}密码登录已重新开启。${NC}\n"
@@ -250,7 +274,7 @@ show_config() {
     printf "密码登录: %s\n" "$(grep -E '^PasswordAuthentication' "$SSH_CONF" 2>/dev/null | tail -1 || echo '未设置 (默认 yes)')"
     printf "密钥认证: %s\n" "$(grep -E '^PubkeyAuthentication' "$SSH_CONF" 2>/dev/null | tail -1 || echo '未设置 (默认 yes)')"
     printf "Root 登录: %s\n" "$(grep -E '^PermitRootLogin' "$SSH_CONF" 2>/dev/null | tail -1 || echo '未设置 (默认 yes)')"
-    printf "已授权密钥数: %s\n" "$(grep -c '^ssh-' ~/.ssh/authorized_keys 2>/dev/null || echo 0)"
+    printf "已授权密钥数: %s\n" "$(grep -E -c '^(ssh-|ecdsa-sha2-)' ~/.ssh/authorized_keys 2>/dev/null || echo 0)"
     echo ""
     read -p "按回车键继续..." dummy
 }
