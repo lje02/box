@@ -13,7 +13,7 @@ check_dependencies
 
 # 应用注册表 (全局)
 declare -A APPS=(
-    ["公开相册"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/photo.sh"
+    ["docker应用"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/docker.sh"
     ["tg-sb管理"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tgbot.sh"
     ["tg 私聊"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/tg_si.sh"
     ["工具环境"]="https://raw.githubusercontent.com/lje02/vp/main/remote_apps/huanjing.sh"
