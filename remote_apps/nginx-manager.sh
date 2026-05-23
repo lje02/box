@@ -1261,6 +1261,10 @@ _site_activate() {
     local domain="$1"
     local avail="${SITES_AVAILABLE}/${domain}.conf"
     local enabled="${SITES_DIR}/${domain}.conf"
+
+    # 首次激活任意站点时，自动移除 default
+    [[ -e "${SITES_DIR}/default" ]] && rm -f "${SITES_DIR}/default" && echo "已移除默认站点 default"
+
     ln -sf "$avail" "$enabled"
     success "配置已写入: $avail"
     nginx_reload
