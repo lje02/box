@@ -674,57 +674,73 @@ CONF
 }
 
 # ══════════════════════════════════════════════════════════════════
-# 模式 C — 镜像 / 多源聚合（sub_filter）
+# 模式 C — 外部域名代理
+#   子模式 1：透传（不改写响应内容，适合 API / 外部服务）
+#   子模式 2：镜像（sub_filter 替换域名引用，适合搬运网站）
 # ══════════════════════════════════════════════════════════════════
 site_create_mirror() {
     require_root
     init_dirs
-    check_sub_filter_module
 
     local domain="" target_url="" target_host=""
 
     read -rp "域名或 server_name: " domain
     [[ -z "$domain" ]] && die "域名不能为空"
 
-    read -rp "镜像目标网站 URL（如 https://example.com）: " target_url
+    read -rp "外部目标 URL（如 https://api.example.com）: " target_url
     [[ -z "$target_url" ]] && die "目标 URL 不能为空"
     target_url=$(normalize_url "$target_url")
     target_host=$(awk -F/ '{print $3}' <<< "$target_url")
 
+    # 子模式选择
+    echo ""
+    echo -e "${CYAN}── 代理模式 ──${NC}"
+    echo "  1) 透传  — 原样转发响应 "
+    echo "  2) 镜像  — sub_filter 替换页面 "
+    local _mode=""
+    read -rp "选择 [1-2，默认 1]: " _mode
+    local rewrite=false
+    [[ "${_mode:-1}" == "2" ]] && rewrite=true
+
+    # 镜像模式需要 sub_filter 模块
+    $rewrite && check_sub_filter_module
+
     ask_ssl_params
     resolve_ssl_cert "$domain"
     _check_port_conflict "$_SSL_PORT"
+    _ensure_upgrade_map
 
-    # 收集额外资源域名（用数组代替字符串拼接，避免特殊字符问题）
+    # 镜像模式：收集额外资源域名
     local -a extra_locs=()
-    local count=1
+    if $rewrite; then
+        echo ""
+        info "可添加额外的静态资源/CDN 域名（作为子路径代理，回车结束）"
+        local count=1
+        while true; do
+            local res_url=""
+            read -rp "额外资源 URL（回车跳过）: " res_url
+            [[ -z "$res_url" ]] && break
 
-    echo ""
-    info "可添加额外的静态资源/CDN 域名（作为子路径代理，回车结束）"
-    while true; do
-        local res_url=""
-        read -rp "额外资源 URL（回车跳过）: " res_url
-        [[ -z "$res_url" ]] && break
+            res_url=$(normalize_url "$res_url")
+            local res_host
+            res_host=$(awk -F/ '{print $3}' <<< "$res_url")
+            local key="_res_${count}"
 
-        res_url=$(normalize_url "$res_url")
-        local res_host
-        res_host=$(awk -F/ '{print $3}' <<< "$res_url")
-        local key="_res_${count}"
-
-        extra_locs+=("$(cat <<LOCEOF
+            extra_locs+=("$(cat <<LOCEOF
 
     location /${key}/ {
         rewrite ^/${key}/(.*) /\$1 break;
         proxy_pass         ${res_url};
-        proxy_set_header   Host           ${res_host};
-        proxy_set_header   Referer        ${res_url};
+        proxy_set_header   Host            ${res_host};
+        proxy_set_header   Referer         ${res_url};
         proxy_set_header   Accept-Encoding "";
         proxy_ssl_server_name on;
     }
 LOCEOF
 )")
-        (( count++ ))
-    done
+            (( count++ ))
+        done
+    fi
 
     local conf_file="${SITES_AVAILABLE}/${domain}.conf"
     {
@@ -750,24 +766,45 @@ LOCEOF
 CONF
         [[ "$_SSL_MODE" != "none" ]] && ssl_block "$_SSL_CERT" "$_SSL_KEY" && echo ""
 
-        cat <<CONF
+        if $rewrite; then
+            # 镜像模式：改写 Host 为目标域名，sub_filter 替换响应内链接
+            cat <<CONF
     location / {
         proxy_pass         ${target_url};
-        proxy_set_header   Host           ${target_host};
-        proxy_set_header   Referer        ${target_url};
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade         \$http_upgrade;
+        proxy_set_header   Connection      \$connection_upgrade;
+        proxy_set_header   Host            ${target_host};
+        proxy_set_header   Referer         ${target_url};
         proxy_set_header   Accept-Encoding "";
         proxy_ssl_server_name on;
 
-        sub_filter "</head>"               "<meta name='referrer' content='no-referrer'></head>";
-        sub_filter "${target_host}"        "${domain}";
+        sub_filter "</head>"                "<meta name='referrer' content='no-referrer'></head>";
+        sub_filter "${target_host}"         "${domain}";
         sub_filter "https://${target_host}" "https://${domain}";
         sub_filter "http://${target_host}"  "https://${domain}";
         sub_filter_once  off;
         sub_filter_types *;
     }
 CONF
-        # 输出额外资源 location 块
-        [[ ${#extra_locs[@]} -gt 0 ]] && printf '%s\n' "${extra_locs[@]}"
+            [[ ${#extra_locs[@]} -gt 0 ]] && printf '%s\n' "${extra_locs[@]}"
+        else
+            # 透传模式：保持 Host 为目标域名，不改写任何响应内容
+            cat <<CONF
+    location / {
+        proxy_pass          ${target_url};
+        proxy_http_version  1.1;
+        proxy_set_header    Upgrade         \$http_upgrade;
+        proxy_set_header    Connection      \$connection_upgrade;
+        proxy_set_header    Host            ${target_host};
+        proxy_set_header    X-Real-IP       \$remote_addr;
+        proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header    X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass  \$http_upgrade;
+        proxy_ssl_server_name on;
+    }
+CONF
+        fi
 
         echo ""
         echo "    location ~ /\. { deny all; }"
