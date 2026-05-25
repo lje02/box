@@ -472,39 +472,91 @@ EOF
     fi
 }
 
-# ──────────────────────────────────────────────────────────
-# 站点生成：模式 A — 静态文件托管
-# ──────────────────────────────────────────────────────────
+#!/usr/bin/env bash
+# nginx_sites.sh — Nginx 站点配置生成器
+# 依赖外部函数：require_root / init_dirs / die / info / warn / success
+#               ask_ssl_params / resolve_ssl_cert / ssl_block
+#               write_redirect_block / normalize_url / _site_activate
+#               nginx_reload / check_sub_filter_module
+# 外部变量：WEBROOT_BASE / SITES_AVAILABLE / SITES_DIR / NGINX_CONF_DIR
+#           _SSL_MODE / _SSL_PORT / _SSL_HTTP_PORT / _SSL_301 / _SSL_CERT / _SSL_KEY
+#           RED / CYAN / NC
+
+set -euo pipefail
+
+# ══════════════════════════════════════════════════════════════════
+# 内部工具函数
+# ══════════════════════════════════════════════════════════════════
+
+# 检查端口是否已被其他站点占用
+_check_port_conflict() {
+    local port=$1
+    if grep -rq "listen[[:space:]]\+${port}[; ]" "${SITES_AVAILABLE}/" 2>/dev/null; then
+        warn "端口 ${port} 已在其他配置中使用，可能产生冲突"
+    fi
+}
+
+# 确保全局 WebSocket/HTTP Connection map 存在（幂等）
+_ensure_upgrade_map() {
+    local map_conf="${NGINX_CONF_DIR}/conf.d/00-map-upgrade.conf"
+    [[ -f "$map_conf" ]] && return 0
+    cat > "$map_conf" <<'EOF'
+# 动态决定 Connection 头：WebSocket 请求保持 upgrade，普通 HTTP 请求正常 close
+map $http_upgrade $connection_upgrade {
+    default  upgrade;
+    ''       close;
+}
+EOF
+    info "已生成 WebSocket map 配置: $map_conf"
+}
+
+# ══════════════════════════════════════════════════════════════════
+# 模式 A — 静态网站（可选 PHP-FPM）
+# ══════════════════════════════════════════════════════════════════
 site_create_static() {
-    require_root; init_dirs
+    require_root
+    init_dirs
 
     local domain="" web_dir="" php=false
+
     read -rp "域名或 server_name: " domain
     [[ -z "$domain" ]] && die "域名不能为空"
 
     read -rp "网站根目录（绝对路径）[默认 ${WEBROOT_BASE}/${domain}/public]: " web_dir
     [[ -z "$web_dir" ]] && web_dir="${WEBROOT_BASE}/${domain}/public"
 
+    local _php=""
     read -rp "是否启用 PHP-FPM？[y/N]: " _php
     [[ "${_php,,}" == "y" ]] && php=true
 
     ask_ssl_params
     resolve_ssl_cert "$domain"
+    _check_port_conflict "$_SSL_PORT"
 
     # 准备目录和默认首页
     mkdir -p "$web_dir"
-    [[ ! -f "${web_dir}/index.html" ]] && cat > "${web_dir}/index.html" <<HTML
-<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${domain}</title></head>
+    if [[ ! -f "${web_dir}/index.html" ]]; then
+        cat > "${web_dir}/index.html" <<HTML
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${domain}</title></head>
 <body><h1>Welcome to ${domain}</h1><p>站点已就绪。</p></body></html>
 HTML
-    chown -R www-data:www-data "$(dirname "$web_dir")" 2>/dev/null || \
-    chown -R nginx:nginx "$(dirname "$web_dir")" 2>/dev/null || true
+    fi
+    chown -R www-data:www-data "$(dirname "$web_dir")" 2>/dev/null \
+        || chown -R nginx:nginx "$(dirname "$web_dir")" 2>/dev/null \
+        || true
+
+    # 构造 index 指令（按是否启用 PHP 决定）
+    local index_directive="index.html index.htm"
+    $php && index_directive+=" index.php"
 
     local conf_file="${SITES_AVAILABLE}/${domain}.conf"
     {
+        # HTTP → HTTPS 强制跳转块（可选）
         [[ "$_SSL_301" == "yes" ]] && write_redirect_block "$domain" "$_SSL_PORT" "$_SSL_HTTP_PORT"
 
         echo "server {"
+
         if [[ "$_SSL_MODE" != "none" ]]; then
             echo "    listen ${_SSL_PORT} ssl;"
             echo "    listen [::]:${_SSL_PORT} ssl;"
@@ -512,14 +564,16 @@ HTML
             echo "    listen ${_SSL_PORT};"
             echo "    listen [::]:${_SSL_PORT};"
         fi
-        echo "    server_name $domain;"
-        echo "    root $web_dir;"
-        echo "    index index.html index.htm$(${php} && echo " index.php" || true);"
-        echo ""
-        echo "    access_log /var/log/nginx/${domain}.access.log;"
-        echo "    error_log  /var/log/nginx/${domain}.error.log;"
-        echo ""
 
+        cat <<CONF
+    server_name ${domain};
+    root        ${web_dir};
+    index       ${index_directive};
+
+    access_log /var/log/nginx/${domain}.access.log;
+    error_log  /var/log/nginx/${domain}.error.log;
+
+CONF
         [[ "$_SSL_MODE" != "none" ]] && ssl_block "$_SSL_CERT" "$_SSL_KEY" && echo ""
 
         cat <<'CONF'
@@ -551,27 +605,33 @@ PHP
     _site_activate "$domain"
 }
 
-# ──────────────────────────────────────────────────────────
-# 站点生成：模式 B — 反向代理（普通端口穿透）
-# ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# 模式 B — 反向代理（HTTP + WebSocket 自适应）
+# ══════════════════════════════════════════════════════════════════
 site_create_proxy() {
-    require_root; init_dirs
+    require_root
+    init_dirs
 
     local domain="" backend=""
+
     read -rp "域名或 server_name: " domain
     [[ -z "$domain" ]] && die "域名不能为空"
+
     read -rp "后端目标地址（如 127.0.0.1:3000 或 http://10.0.0.5:8080）: " backend
     [[ -z "$backend" ]] && die "后端地址不能为空"
     backend=$(normalize_url "$backend")
 
     ask_ssl_params
     resolve_ssl_cert "$domain"
+    _check_port_conflict "$_SSL_PORT"
+    _ensure_upgrade_map   # 生成 $connection_upgrade map（幂等）
 
     local conf_file="${SITES_AVAILABLE}/${domain}.conf"
     {
         [[ "$_SSL_301" == "yes" ]] && write_redirect_block "$domain" "$_SSL_PORT" "$_SSL_HTTP_PORT"
 
         echo "server {"
+
         if [[ "$_SSL_MODE" != "none" ]]; then
             echo "    listen ${_SSL_PORT} ssl;"
             echo "    listen [::]:${_SSL_PORT} ssl;"
@@ -579,9 +639,10 @@ site_create_proxy() {
             echo "    listen ${_SSL_PORT};"
             echo "    listen [::]:${_SSL_PORT};"
         fi
+
         cat <<CONF
-    server_name $domain;
-    resolver 1.1.1.1 8.8.8.8 valid=300s;
+    server_name ${domain};
+    resolver    1.1.1.1 8.8.8.8 valid=300s;
 
     access_log /var/log/nginx/${domain}.access.log;
     error_log  /var/log/nginx/${domain}.error.log;
@@ -589,17 +650,18 @@ site_create_proxy() {
 CONF
         [[ "$_SSL_MODE" != "none" ]] && ssl_block "$_SSL_CERT" "$_SSL_KEY" && echo ""
 
+        # \$ 转义：写入文件时保留 nginx 变量
         cat <<CONF
     location / {
-        proxy_pass         $backend;
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Real-IP \$remote_addr;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto \$scheme;
-        proxy_cache_bypass \$http_upgrade;
+        proxy_pass          ${backend};
+        proxy_http_version  1.1;
+        proxy_set_header    Upgrade    \$http_upgrade;
+        proxy_set_header    Connection \$connection_upgrade;
+        proxy_set_header    Host              \$host;
+        proxy_set_header    X-Real-IP         \$remote_addr;
+        proxy_set_header    X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header    X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass  \$http_upgrade;
         proxy_ssl_server_name on;
     }
 
@@ -611,47 +673,57 @@ CONF
     _site_activate "$domain"
 }
 
-# ──────────────────────────────────────────────────────────
-# 站点生成：模式 C — 镜像 / 多源聚合（sub_filter）
-# ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# 模式 C — 镜像 / 多源聚合（sub_filter）
+# ══════════════════════════════════════════════════════════════════
 site_create_mirror() {
-    require_root; init_dirs
+    require_root
+    init_dirs
     check_sub_filter_module
 
-    local domain="" target_url=""
+    local domain="" target_url="" target_host=""
+
     read -rp "域名或 server_name: " domain
     [[ -z "$domain" ]] && die "域名不能为空"
+
     read -rp "镜像目标网站 URL（如 https://example.com）: " target_url
     [[ -z "$target_url" ]] && die "目标 URL 不能为空"
     target_url=$(normalize_url "$target_url")
-    local target_host; target_host=$(echo "$target_url" | awk -F/ '{print $3}')
+    target_host=$(awk -F/ '{print $3}' <<< "$target_url")
 
     ask_ssl_params
     resolve_ssl_cert "$domain"
+    _check_port_conflict "$_SSL_PORT"
 
-    # 收集额外资源域名
-    local extra_locs="" count=1
+    # 收集额外资源域名（用数组代替字符串拼接，避免特殊字符问题）
+    local -a extra_locs=()
+    local count=1
+
     echo ""
     info "可添加额外的静态资源/CDN 域名（作为子路径代理，回车结束）"
     while true; do
+        local res_url=""
         read -rp "额外资源 URL（回车跳过）: " res_url
         [[ -z "$res_url" ]] && break
+
         res_url=$(normalize_url "$res_url")
-        local res_host; res_host=$(echo "$res_url" | awk -F/ '{print $3}')
+        local res_host
+        res_host=$(awk -F/ '{print $3}' <<< "$res_url")
         local key="_res_${count}"
-        extra_locs+=$(cat <<LOCEOF
+
+        extra_locs+=("$(cat <<LOCEOF
 
     location /${key}/ {
         rewrite ^/${key}/(.*) /\$1 break;
-        proxy_pass $res_url;
-        proxy_set_header Host $res_host;
-        proxy_set_header Referer $res_url;
-        proxy_set_header Accept-Encoding "";
+        proxy_pass         ${res_url};
+        proxy_set_header   Host           ${res_host};
+        proxy_set_header   Referer        ${res_url};
+        proxy_set_header   Accept-Encoding "";
         proxy_ssl_server_name on;
     }
 LOCEOF
-)
-        ((count++))
+)")
+        (( count++ ))
     done
 
     local conf_file="${SITES_AVAILABLE}/${domain}.conf"
@@ -659,6 +731,7 @@ LOCEOF
         [[ "$_SSL_301" == "yes" ]] && write_redirect_block "$domain" "$_SSL_PORT" "$_SSL_HTTP_PORT"
 
         echo "server {"
+
         if [[ "$_SSL_MODE" != "none" ]]; then
             echo "    listen ${_SSL_PORT} ssl;"
             echo "    listen [::]:${_SSL_PORT} ssl;"
@@ -666,9 +739,10 @@ LOCEOF
             echo "    listen ${_SSL_PORT};"
             echo "    listen [::]:${_SSL_PORT};"
         fi
+
         cat <<CONF
-    server_name $domain;
-    resolver 1.1.1.1 8.8.8.8 valid=300s;
+    server_name ${domain};
+    resolver    1.1.1.1 8.8.8.8 valid=300s;
 
     access_log /var/log/nginx/${domain}.access.log;
     error_log  /var/log/nginx/${domain}.error.log;
@@ -678,20 +752,23 @@ CONF
 
         cat <<CONF
     location / {
-        proxy_pass $target_url;
-        proxy_set_header Host $target_host;
-        proxy_set_header Referer $target_url;
-        proxy_set_header Accept-Encoding "";
+        proxy_pass         ${target_url};
+        proxy_set_header   Host           ${target_host};
+        proxy_set_header   Referer        ${target_url};
+        proxy_set_header   Accept-Encoding "";
         proxy_ssl_server_name on;
-        sub_filter "</head>" "<meta name='referrer' content='no-referrer'></head>";
-        sub_filter "$target_host"          "$domain";
-        sub_filter "https://$target_host"  "https://$domain";
-        sub_filter "http://$target_host"   "https://$domain";
-        sub_filter_once off;
+
+        sub_filter "</head>"               "<meta name='referrer' content='no-referrer'></head>";
+        sub_filter "${target_host}"        "${domain}";
+        sub_filter "https://${target_host}" "https://${domain}";
+        sub_filter "http://${target_host}"  "https://${domain}";
+        sub_filter_once  off;
         sub_filter_types *;
     }
 CONF
-        [[ -n "$extra_locs" ]] && echo "$extra_locs"
+        # 输出额外资源 location 块
+        [[ ${#extra_locs[@]} -gt 0 ]] && printf '%s\n' "${extra_locs[@]}"
+
         echo ""
         echo "    location ~ /\. { deny all; }"
         echo "}"
@@ -700,11 +777,12 @@ CONF
     _site_activate "$domain"
 }
 
-# ──────────────────────────────────────────────────────────
-# 站点生成：模式 D — HTTP 正向代理
-# ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# 模式 D — HTTP 正向代理
+# ══════════════════════════════════════════════════════════════════
 site_create_forward_proxy() {
-    require_root; init_dirs
+    require_root
+    init_dirs
 
     local port=""
     read -rp "正向代理监听端口 [默认 8888]: " port
@@ -713,39 +791,70 @@ site_create_forward_proxy() {
     warn "Nginx 原生仅支持 HTTP 正向代理，不支持 HTTPS CONNECT 隧道。"
     warn "如需完整 HTTPS 支持，请改用 Squid 或 3proxy。"
 
-    local conf_file="${SITES_DIR}/forward-proxy-${port}.conf"
+    # 收集允许访问的 IP/网段（不填则仅允许内网三段）
+    echo ""
+    info "请输入允许使用此代理的 IP 或网段，回车跳过使用默认内网段"
+    info "示例: 10.0.0.0/8  或  192.168.1.100"
+    local -a allow_list=()
+    while true; do
+        local _ip=""
+        read -rp "允许的 IP/网段（回车结束）: " _ip
+        [[ -z "$_ip" ]] && break
+        allow_list+=("    allow ${_ip};")
+    done
+
+    # 默认仅允许 RFC-1918 内网
+    if [[ ${#allow_list[@]} -eq 0 ]]; then
+        allow_list=(
+            "    allow 10.0.0.0/8;"
+            "    allow 172.16.0.0/12;"
+            "    allow 192.168.0.0/16;"
+            "    allow 127.0.0.1;"
+        )
+    fi
+
+    local conf_file="${SITES_AVAILABLE}/forward-proxy-${port}.conf"
     cat > "$conf_file" <<EOF
 # Nginx HTTP 正向代理（不支持 HTTPS CONNECT 隧道）
 # 如需 HTTPS 支持请改用 Squid / 3proxy
 server {
-    listen $port;
+    listen ${port};
     server_name _;
     resolver 1.1.1.1 8.8.8.8 valid=300s;
     resolver_timeout 5s;
 
     location / {
-        proxy_pass \$scheme://\$http_host\$request_uri;
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_buffers 256 4k;
+$(printf '%s\n' "${allow_list[@]}")
+        deny all;
+
+        proxy_pass              \$scheme://\$http_host\$request_uri;
+        proxy_set_header        Host             \$http_host;
+        proxy_set_header        X-Real-IP        \$remote_addr;
+        proxy_set_header        X-Forwarded-For  \$proxy_add_x_forwarded_for;
+        proxy_buffers           256 4k;
         proxy_max_temp_file_size 0;
-        proxy_connect_timeout 30;
+        proxy_connect_timeout   30s;
     }
 }
 EOF
-    success "正向代理配置已写入: $conf_file"
-    nginx_reload
+
+    _site_activate "forward-proxy-${port}"
 }
 
-# ──────────────────────────────────────────────────────────
-# 站点生成：模式 E — TCP/UDP 流代理（stream 模块）
-# ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# 模式 E — TCP/UDP 流代理（stream 模块）
+# ══════════════════════════════════════════════════════════════════
 site_create_stream_proxy() {
     require_root
 
-    if ! nginx -V 2>&1 | grep -q "stream"; then
+    # 检测 stream 模块
+    local nginx_v
+    nginx_v=$(nginx -V 2>&1)
+    if ! grep -q "with-stream" <<< "$nginx_v"; then
         die "当前 Nginx 未编译 stream 模块，无法使用 TCP/UDP 流代理。\nDebian/Ubuntu 可执行: apt install nginx-full"
+    fi
+    if ! grep -q "with-stream_ssl_module" <<< "$nginx_v"; then
+        warn "未检测到 stream_ssl 模块，如需 TLS 透传请安装 nginx-full"
     fi
 
     local listen_port="" backend_host="" backend_port="" proto="tcp"
@@ -758,70 +867,93 @@ site_create_stream_proxy() {
     read -rp "协议 [tcp/udp，默认 tcp]: " proto
     [[ -z "$proto" ]] && proto="tcp"
 
-    local stream_conf="${NGINX_CONF_DIR}/conf.d/stream-${listen_port}.conf"
-    local udp_flag; [[ "$proto" == "udp" ]] && udp_flag=" udp" || udp_flag=""
+    # stream 块必须在顶层，不能放在 http {} include 目录内
+    local stream_dir="${NGINX_CONF_DIR}/stream.d"
+    mkdir -p "$stream_dir"
+    local stream_conf="${stream_dir}/stream-${listen_port}.conf"
+
+    local udp_flag=""
+    [[ "$proto" == "udp" ]] && udp_flag=" udp"
 
     cat > "$stream_conf" <<EOF
-# TCP/UDP 流代理 — 端口 ${listen_port} → ${backend_host}:${backend_port}
+# TCP/UDP 流代理 — 端口 ${listen_port}${udp_flag:+/$proto} → ${backend_host}:${backend_port}
+# 注意：此文件须在 nginx.conf 顶层 include（与 http {} 平级）：
+#   include /etc/nginx/stream.d/*.conf;
 stream {
     server {
         listen ${listen_port}${udp_flag};
-        proxy_pass ${backend_host}:${backend_port};
+        proxy_pass            ${backend_host}:${backend_port};
         proxy_connect_timeout 10s;
-        proxy_timeout 60s;
+        proxy_timeout         60s;
     }
 }
 EOF
-    warn "stream 块不能嵌套在 http 块内，请确认 nginx.conf 中已顶层 include conf.d/*.conf"
+
+    warn "stream 块须在 nginx.conf 顶层 include，与 http {} 平级，请确认："
+    warn "  include ${stream_dir}/*.conf;"
     success "流代理配置已写入: $stream_conf"
     nginx_reload
 }
 
-# ──────────────────────────────────────────────────────────
-# 站点生成：模式 F — 域名跳转（Redirect）
-# 支持：301 永久 / 302 临时 / 307 保留Method临时 / 308 保留Method永久
-# 支持：整站跳转 / 精确路径跳转 / 正则路径跳转
-# ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# 模式 F — 域名跳转（Redirect）
+# 支持：301 / 302 / 307 / 308
+# 支持：保留路径 / 整站固定 / 自定义 location 规则
+# ══════════════════════════════════════════════════════════════════
 site_create_redirect() {
-    require_root; init_dirs
+    require_root
+    init_dirs
 
-    local src_domain="" target_url="" code="301" keep_path="yes"
+    local src_domain="" target_url="" code="301"
 
-    read -rp "来源域名（访问者访问的域名，如 old.example.com）: " src_domain
+    read -rp "来源域名（如 old.example.com）: " src_domain
     [[ -z "$src_domain" ]] && die "来源域名不能为空"
 
-    read -rp "跳转目标 URL（如 https://google.com 或 https://new.example.com）: " target_url
+    read -rp "跳转目标 URL（如 https://new.example.com）: " target_url
     [[ -z "$target_url" ]] && die "目标 URL 不能为空"
-    # 目标 URL 去掉末尾斜杠，便于拼接路径
-    target_url="${target_url%/}"
+    target_url="${target_url%/}"  # 去掉末尾斜杠
 
     echo ""
     echo -e "${CYAN}── 跳转类型 ──${NC}"
-    echo "  1) 301 — 永久跳转（浏览器/搜索引擎缓存，推荐换域名用）"
-    echo "  2) 302 — 临时跳转（不缓存，推荐维护期用）"
-    echo "  3) 307 — 临时跳转（保留请求 Method，POST 不变为 GET）"
-    echo "  4) 308 — 永久跳转（保留请求 Method）"
+    echo "  1) 301 — 永久（浏览器/SEO 缓存，适合换域名）"
+    echo "  2) 302 — 临时（不缓存，适合维护期）"
+    echo "  3) 307 — 临时 + 保留 Method（POST 不变为 GET）"
+    echo "  4) 308 — 永久 + 保留 Method"
+    local _code_choice=""
     read -rp "选择 [1-4，默认 1]: " _code_choice
     case "${_code_choice:-1}" in
-        1) code=301 ;;
-        2) code=302 ;;
-        3) code=307 ;;
-        4) code=308 ;;
+        1) code=301 ;; 2) code=302 ;; 3) code=307 ;; 4) code=308 ;;
         *) die "无效选项" ;;
     esac
 
     echo ""
     echo -e "${CYAN}── 路径处理 ──${NC}"
-    echo "  1) 保留路径跳转（访问 /foo/bar → 目标/foo/bar）"
-    echo "  2) 整站跳转到固定 URL（所有路径都跳到目标根）"
-    echo "  3) 精确路径规则（自定义 location 和 rewrite）"
+    echo "  1) 保留路径（/foo/bar → 目标/foo/bar）"
+    echo "  2) 整站跳转到固定 URL"
+    echo "  3) 自定义 location 规则"
+    local _path_choice=""
     read -rp "选择 [1-3，默认 1]: " _path_choice
 
-    # 监听端口（重定向站点一般只需 80，但也可加 SSL）
+    # 提前声明 rules 数组，避免 HTTPS 块引用时未初始化
+    local -a rules=()
+    if [[ "${_path_choice:-1}" == "3" ]]; then
+        echo ""
+        echo -e "${CYAN}请输入自定义路径规则，回车空行结束${NC}" >&2
+        echo "示例: location /old { return 301 ${target_url}/new; }" >&2
+        echo "示例: location ~* ^/blog/(.+) { return 301 ${target_url}/posts/\$1; }" >&2
+        while true; do
+            local _rule=""
+            read -rp "location 规则（回车结束）: " _rule
+            [[ -z "$_rule" ]] && break
+            rules+=("    ${_rule}")
+        done
+    fi
+
     echo ""
     echo -e "${CYAN}── 监听配置 ──${NC}"
-    echo "  1) 仅监听 HTTP 80（最常用，来源本身就是 HTTP 域名）"
-    echo "  2) 同时监听 HTTP 80 + HTTPS 443（来源域名有 SSL）"
+    echo "  1) 仅 HTTP 80"
+    echo "  2) HTTP 80 + HTTPS 443（来源域名有 SSL）"
+    local _listen_choice=""
     read -rp "选择 [1-2，默认 1]: " _listen_choice
 
     local has_ssl=false
@@ -831,14 +963,29 @@ site_create_redirect() {
         resolve_ssl_cert "$src_domain"
     fi
 
-    local conf_file="${SITES_AVAILABLE}/${src_domain}-redirect.conf"
+    # 生成 return 指令（根据路径模式）
+    _redirect_return() {
+        local c=$1
+        case "${_path_choice:-1}" in
+            1) echo "    return ${c} ${target_url}\$request_uri;" ;;
+            2) echo "    return ${c} ${target_url}/;" ;;
+            3)
+                if [[ ${#rules[@]} -gt 0 ]]; then
+                    printf '%s\n' "${rules[@]}"
+                else
+                    echo "    return ${c} ${target_url}\$request_uri;"
+                fi
+                ;;
+        esac
+    }
 
+    local conf_file="${SITES_AVAILABLE}/${src_domain}-redirect.conf"
     {
         echo "# 跳转规则: ${src_domain} → ${target_url} [${code}]"
         echo "# 生成时间: $(date)"
         echo ""
 
-        # ── HTTP server 块 ──
+        # HTTP 块
         echo "server {"
         echo "    listen 80;"
         echo "    listen [::]:80;"
@@ -847,39 +994,10 @@ site_create_redirect() {
         echo "    access_log /var/log/nginx/${src_domain}-redirect.access.log;"
         echo "    error_log  /var/log/nginx/${src_domain}-redirect.error.log;"
         echo ""
-
-        case "${_path_choice:-1}" in
-            1)
-                echo "    # 保留原始路径跳转"
-                echo "    return ${code} ${target_url}\$request_uri;"
-                ;;
-            2)
-                echo "    # 整站跳转到固定目标"
-                echo "    return ${code} ${target_url}/;"
-                ;;
-            3)
-                echo ""
-                echo -e "${CYAN}请输入自定义路径规则（输入完成后回车空行结束）${NC}" >&2
-                echo "示例: location /old-page { return 301 ${target_url}/new-page; }" >&2
-                echo "示例: location ~* ^/blog/(.+) { return 301 ${target_url}/posts/\$1; }" >&2
-                local rules=()
-                while true; do
-                    read -rp "location 规则（回车结束）: " _rule
-                    [[ -z "$_rule" ]] && break
-                    rules+=("    $_rule")
-                done
-                if [[ ${#rules[@]} -gt 0 ]]; then
-                    printf '%s\n' "${rules[@]}"
-                else
-                    # 兜底：保留路径
-                    echo "    return ${code} ${target_url}\$request_uri;"
-                fi
-                ;;
-        esac
-
+        _redirect_return "$code"
         echo "}"
 
-        # ── HTTPS server 块（可选）──
+        # HTTPS 块（可选）
         if $has_ssl; then
             echo ""
             echo "server {"
@@ -892,12 +1010,7 @@ site_create_redirect() {
             echo "    access_log /var/log/nginx/${src_domain}-redirect.access.log;"
             echo "    error_log  /var/log/nginx/${src_domain}-redirect.error.log;"
             echo ""
-            case "${_path_choice:-1}" in
-                1) echo "    return ${code} ${target_url}\$request_uri;" ;;
-                2) echo "    return ${code} ${target_url}/;" ;;
-                3) [[ ${#rules[@]} -gt 0 ]] && printf '%s\n' "${rules[@]}" \
-                   || echo "    return ${code} ${target_url}\$request_uri;" ;;
-            esac
+            _redirect_return "$code"
             echo "}"
         fi
     } > "$conf_file"
@@ -909,13 +1022,13 @@ site_create_redirect() {
     echo -e "  ${CYAN}${src_domain}${NC}  ──[${code}]──▶  ${target_url}"
 }
 
-# ──────────────────────────────────────────────────────────
-# 站点生成：模式 G — 负载均衡（upstream）
-# 支持：轮询 / least_conn / ip_hash / random
-# 支持：健康检查参数 / 权重 / 备用节点
-# ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# 模式 G — 负载均衡（upstream）
+# 支持：round-robin / least_conn / ip_hash / random
+# ══════════════════════════════════════════════════════════════════
 site_create_loadbalance() {
-    require_root; init_dirs
+    require_root
+    init_dirs
 
     local domain=""
     read -rp "域名或 server_name: " domain
@@ -923,10 +1036,11 @@ site_create_loadbalance() {
 
     echo ""
     echo -e "${CYAN}── 负载均衡算法 ──${NC}"
-    echo "  1) round-robin   轮询（默认，按顺序分发）"
-    echo "  2) least_conn    最少连接（优先分发到连接数最少的节点）"
-    echo "  3) ip_hash       IP 哈希（同一 IP 固定到同一节点，适合 Session）"
-    echo "  4) random        随机（随机选择节点）"
+    echo "  1) round-robin  轮询（默认，按顺序分发）"
+    echo "  2) least_conn   最少连接（优先分发到连接数最少的节点）"
+    echo "  3) ip_hash      IP 哈希（同 IP 固定节点，适合 Session）"
+    echo "  4) random       随机"
+    local _lb_algo=""
     read -rp "选择 [1-4，默认 1]: " _lb_algo
     local lb_directive=""
     case "${_lb_algo:-1}" in
@@ -939,11 +1053,12 @@ site_create_loadbalance() {
 
     # 收集后端节点
     echo ""
-    info "请逐行输入后端节点，格式：IP:端口 [weight=N] [backup]"
-    info "示例: 192.168.1.10:8080  或  192.168.1.11:8080 weight=3  或  192.168.1.12:8080 backup"
-    info "输入空行结束"
-    local servers=()
+    info "请逐行输入后端节点（回车结束）"
+    info "格式: IP:端口 [weight=N] [backup]"
+    info "示例: 192.168.1.10:8080  |  192.168.1.11:8080 weight=3  |  192.168.1.12:8080 backup"
+    local -a servers=()
     while true; do
+        local _srv=""
         read -rp "后端节点: " _srv
         [[ -z "$_srv" ]] && break
         servers+=("$_srv")
@@ -951,17 +1066,22 @@ site_create_loadbalance() {
     [[ ${#servers[@]} -eq 0 ]] && die "至少需要一个后端节点"
 
     # 健康检查参数
-    read -rp "max_fails（失败次数判定不可用，默认 3）: " _mf
+    local _mf="" _ft=""
+    read -rp "max_fails（失败次数，默认 3）: " _mf
     read -rp "fail_timeout（不可用持续时间，默认 10s）: " _ft
     [[ -z "$_mf" ]] && _mf=3
     [[ -z "$_ft" ]] && _ft="10s"
 
     ask_ssl_params
     resolve_ssl_cert "$domain"
+    _check_port_conflict "$_SSL_PORT"
+    _ensure_upgrade_map
 
-    local upstream_name="${domain//./_}_upstream"
+    # upstream 名用域名+短 hash，避免同名冲突
+    local upstream_name
+    upstream_name="${domain//./_}_$(printf '%s' "$domain" | md5sum | cut -c1-6)_upstream"
+
     local conf_file="${SITES_AVAILABLE}/${domain}.conf"
-
     {
         echo "# 负载均衡配置: ${domain}"
         echo "# 生成时间: $(date)"
@@ -973,13 +1093,14 @@ site_create_loadbalance() {
             echo "    server ${srv} max_fails=${_mf} fail_timeout=${_ft};"
         done
         echo ""
-        echo "    keepalive 32;  # 保持长连接池"
+        echo "    keepalive 32;"
         echo "}"
         echo ""
 
         [[ "$_SSL_301" == "yes" ]] && write_redirect_block "$domain" "$_SSL_PORT" "$_SSL_HTTP_PORT"
 
         echo "server {"
+
         if [[ "$_SSL_MODE" != "none" ]]; then
             echo "    listen ${_SSL_PORT} ssl;"
             echo "    listen [::]:${_SSL_PORT} ssl;"
@@ -987,6 +1108,7 @@ site_create_loadbalance() {
             echo "    listen ${_SSL_PORT};"
             echo "    listen [::]:${_SSL_PORT};"
         fi
+
         cat <<CONF
     server_name ${domain};
 
@@ -998,18 +1120,17 @@ CONF
 
         cat <<CONF
     location / {
-        proxy_pass         http://${upstream_name};
-        proxy_http_version 1.1;
-        proxy_set_header   Connection "";
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Real-IP \$remote_addr;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_pass          http://${upstream_name};
+        proxy_http_version  1.1;
+        proxy_set_header    Connection        "";
+        proxy_set_header    Host              \$host;
+        proxy_set_header    X-Real-IP         \$remote_addr;
+        proxy_set_header    X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header    X-Forwarded-Proto \$scheme;
 
-        # 超时设置
         proxy_connect_timeout  5s;
-        proxy_send_timeout     60s;
-        proxy_read_timeout     60s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
     }
 
     location ~ /\. { deny all; }
