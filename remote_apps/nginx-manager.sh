@@ -11,11 +11,12 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────
 NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx}"
 SITES_AVAILABLE="${NGINX_CONF_DIR}/sites-available"
-SITES_DIR="${SITES_DIR:-${NGINX_CONF_DIR}/sites-enabled}"   # sites-enabled
-CERT_DIR="${CERT_DIR:-${NGINX_CONF_DIR}/certs}"             # 自定义证书根目录
-SELF_CERT_DIR="${SELF_CERT_DIR:-${NGINX_CONF_DIR}/ssl}"     # 自签名证书目录
+SITES_DIR="${SITES_DIR:-${NGINX_CONF_DIR}/sites-enabled}"
+CERT_DIR="${CERT_DIR:-${NGINX_CONF_DIR}/certs}"
+SELF_CERT_DIR="${SELF_CERT_DIR:-${NGINX_CONF_DIR}/ssl}"
 WEBROOT_BASE="${WEBROOT_BASE:-/var/www}"
-LE_CERT_BASE="/etc/letsencrypt/live"                        # Let's Encrypt 证书根
+LE_CERT_BASE="/etc/letsencrypt/live"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/nginx-gateway}"
 LOG_FILE="/var/log/nginx-gateway.log"
 
 # ──────────────────────────────────────────────────────────
@@ -24,8 +25,9 @@ LOG_FILE="/var/log/nginx-gateway.log"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
-# 所有状态信息输出到 stderr，避免混入文件重定向
-_log() { echo -e "$*" >&2 | tee -a "$LOG_FILE" >/dev/null 2>&1 || echo -e "$*" >&2; }
+# Fix: pipe to tee first, then redirect tee's stdout to stderr
+# 之前写法将 stdout 先重定向到 stderr，管道拿不到内容，日志文件始终为空
+_log() { echo -e "$*" | tee -a "$LOG_FILE" >&2; }
 info()    { _log "${CYAN}[信息]${NC}  $*"; }
 success() { _log "${GREEN}[成功]${NC}  $*"; }
 warn()    { _log "${YELLOW}[警告]${NC}  $*"; }
@@ -44,27 +46,53 @@ confirm() {
 init_dirs() {
     mkdir -p "$SITES_AVAILABLE" "$SITES_DIR" "$CERT_DIR" "$SELF_CERT_DIR"
     touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/nginx-gateway.log"
-    # 确保 nginx.conf include sites-enabled
     if [[ -f "${NGINX_CONF_DIR}/nginx.conf" ]] && \
        ! grep -q "sites-enabled" "${NGINX_CONF_DIR}/nginx.conf" 2>/dev/null; then
         warn "nginx.conf 未包含 sites-enabled，请手动添加: include /etc/nginx/sites-enabled/*;"
     fi
 }
 
+# Fix: 去掉末尾斜杠，避免拼接路径时出现双斜杠
 normalize_url() {
-    local url="$1"
+    local url="${1%/}"
     [[ ! "$url" =~ ^https?:// ]] && url="http://$url"
     echo "$url"
+}
+
+# ──────────────────────────────────────────────────────────
+# 内部工具函数
+# ──────────────────────────────────────────────────────────
+
+# 检查端口是否已被其他站点占用
+_check_port_conflict() {
+    local port=$1
+    if grep -rq "listen[[:space:]]\+${port}[; ]" "${SITES_AVAILABLE}/" 2>/dev/null; then
+        warn "端口 ${port} 已在其他配置中使用，可能产生冲突"
+    fi
+}
+
+# 确保全局 WebSocket/HTTP Connection map 存在（幂等）
+_ensure_upgrade_map() {
+    local map_conf="${NGINX_CONF_DIR}/conf.d/00-map-upgrade.conf"
+    [[ -f "$map_conf" ]] && return 0
+    cat > "$map_conf" <<'EOF'
+# 动态决定 Connection 头：WebSocket 请求保持 upgrade，普通 HTTP 请求正常 close
+map $http_upgrade $connection_upgrade {
+    default  upgrade;
+    ''       close;
+}
+EOF
+    info "已生成 WebSocket map 配置: $map_conf"
 }
 
 # ──────────────────────────────────────────────────────────
 # Nginx 安装与检测
 # ──────────────────────────────────────────────────────────
 detect_pkg_manager() {
-    if command -v apt-get &>/dev/null; then echo "apt"
-    elif command -v dnf &>/dev/null;   then echo "dnf"
-    elif command -v yum &>/dev/null;   then echo "yum"
-    elif command -v pacman &>/dev/null; then echo "pacman"
+    if   command -v apt-get &>/dev/null; then echo "apt"
+    elif command -v dnf     &>/dev/null; then echo "dnf"
+    elif command -v yum     &>/dev/null; then echo "yum"
+    elif command -v pacman  &>/dev/null; then echo "pacman"
     else die "不支持的包管理器，请手动安装依赖"; fi
 }
 
@@ -89,9 +117,9 @@ check_and_install_nginx() {
     warn "未检测到 Nginx，正在尝试自动安装..."
     local mgr; mgr=$(detect_pkg_manager)
     case $mgr in
-        apt)    apt-get update -qq && apt-get install -y nginx ;;
-        dnf|yum) $mgr install -y nginx ;;
-        pacman) pacman -Sy --noconfirm nginx ;;
+        apt)        apt-get update -qq && apt-get install -y nginx ;;
+        dnf|yum)    $mgr install -y nginx ;;
+        pacman)     pacman -Sy --noconfirm nginx ;;
     esac
     systemctl enable nginx
     success "Nginx 安装成功: $(nginx -v 2>&1)"
@@ -110,7 +138,7 @@ nginx_status()  { systemctl status nginx; }
 # 检测 sub_filter 模块（镜像模式依赖）
 check_sub_filter_module() {
     if ! nginx -V 2>&1 | grep -q "http_sub_module"; then
-        warn "当前 Nginx 未编译 http_sub_module，镜像/多源聚合模式的内容替换功能不可用。"
+        warn "当前 Nginx 未编译 http_sub_module，镜像模式的内容替换功能不可用。"
         warn "Debian/Ubuntu 可执行: apt install nginx-full"
         echo ""
         read -rp "是否仍继续生成配置？[y/N]: " _c
@@ -149,7 +177,6 @@ find_certs_advanced() {
         for f in "${k_names[@]}"; do
             [[ -f "${dir}/${f}" ]] && KEY_PATH="${dir}/${f}" && break
         done
-        # 兜底：内容特征扫描
         if [[ -z "$CERT_PATH" ]]; then
             CERT_PATH=$(grep -rl -m 1 "BEGIN CERTIFICATE" "$dir" 2>/dev/null \
                         | grep -E '\.(pem|crt|cer)$' | head -n 1 || true)
@@ -164,7 +191,7 @@ find_certs_advanced() {
 }
 
 # ──────────────────────────────────────────────────────────
-# 通用 SSL 安全配置块（供 heredoc 嵌入）
+# 通用 SSL 安全配置块
 # ──────────────────────────────────────────────────────────
 ssl_block() {
     local cert="$1" key="$2"
@@ -181,9 +208,10 @@ EOF
 }
 
 # ──────────────────────────────────────────────────────────
-# 证书 SSL 参数交互（复用）
+# SSL 参数交互
+# 出参（全局变量）：_SSL_MODE / _SSL_PORT / _SSL_CERT / _SSL_KEY
+#                   _SSL_301  / _SSL_HTTP_PORT
 # ──────────────────────────────────────────────────────────
-# 出参（全局变量）：_SSL_MODE  _SSL_PORT  _SSL_CERT  _SSL_KEY  _SSL_301  _SSL_HTTP_PORT
 ask_ssl_params() {
     echo ""
     echo -e "${CYAN}── SSL / 证书配置 ──${NC}"
@@ -199,17 +227,13 @@ ask_ssl_params() {
     _SSL_CERT=""; _SSL_KEY=""; _SSL_MODE=""; _SSL_PORT=""; _SSL_301="no"; _SSL_HTTP_PORT="80"
 
     _ask_301_and_ports() {
-        # HTTPS 目标端口
         read -rp "HTTPS 监听端口 [默认 443]: " _SSL_PORT
         [[ -z "$_SSL_PORT" ]] && _SSL_PORT="443"
-        # 是否开启强转
         read -rp "开启 HTTP→HTTPS 301 强转？[Y/n]: " _r
         if [[ "${_r,,}" != "n" ]]; then
             _SSL_301="yes"
-            # HTTP 来源端口（非 443/SSL 的明文端口）
             read -rp "HTTP 来源端口（强转监听端口）[默认 80]: " _SSL_HTTP_PORT
             [[ -z "$_SSL_HTTP_PORT" ]] && _SSL_HTTP_PORT="80"
-            # 非 80 端口时给出提示
             if [[ "$_SSL_HTTP_PORT" != "80" ]]; then
                 warn "非标准 HTTP 端口 ${_SSL_HTTP_PORT}：客户端须先访问 http://域名:${_SSL_HTTP_PORT}/ 才会触发 301 跳转"
                 warn "浏览器直接访问 https://域名:${_SSL_PORT}/ 不受影响"
@@ -238,11 +262,8 @@ ask_ssl_params() {
     esac
 }
 
-# 根据 _SSL_MODE 解析出真实证书路径，填入 _SSL_CERT / _SSL_KEY
-# 同时处理申请逻辑（letsencrypt / self）
 resolve_ssl_cert() {
     local domain="$1"
-
     case "$_SSL_MODE" in
         auto)
             if find_certs_advanced "$domain"; then
@@ -262,13 +283,47 @@ resolve_ssl_cert() {
             _SSL_CERT="${SELF_CERT_DIR}/${domain}/fullchain.pem"
             _SSL_KEY="${SELF_CERT_DIR}/${domain}/privkey.pem"
             ;;
-        manual)
-            : # 已由 ask_ssl_params 填好
-            ;;
-        none)
-            _SSL_CERT=""; _SSL_KEY=""
-            ;;
+        manual) : ;;
+        none)   _SSL_CERT=""; _SSL_KEY="" ;;
     esac
+}
+
+# ──────────────────────────────────────────────────────────
+# HTTP→HTTPS 重定向块
+# ──────────────────────────────────────────────────────────
+write_redirect_block() {
+    local domain="$1"
+    local https_port="$2"
+    local http_port="${3:-80}"
+
+    if [[ "$http_port" == "80" ]]; then
+        local target_url
+        if [[ "$https_port" == "443" ]]; then
+            target_url="https://\$host\$request_uri"
+        else
+            target_url="https://\$host:${https_port}\$request_uri"
+        fi
+        cat <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $domain;
+    return 301 ${target_url};
+}
+
+EOF
+    else
+        cat <<EOF
+# 非标准 HTTP 端口 ${http_port}：静默关闭，请直接使用 HTTPS:${https_port}
+server {
+    listen ${http_port};
+    server_name $domain;
+    return 444;
+}
+
+EOF
+        warn "HTTP:${http_port} 已设为 444 拒绝，请直接访问 https://${domain}:${https_port}/"
+    fi
 }
 
 # ──────────────────────────────────────────────────────────
@@ -289,7 +344,6 @@ ensure_certbot() {
 
 ensure_openssl() { command -v openssl &>/dev/null || install_pkg openssl; }
 
-# 内部调用：申请 LE 证书（交互收集 email）
 cert_issue_auto() {
     local domain="$1"
     ensure_certbot
@@ -304,15 +358,13 @@ cert_issue_auto() {
     success "证书申请成功: ${LE_CERT_BASE}/${domain}/"
 }
 
-# 内部调用：生成自签名证书
 cert_self_signed_auto() {
     local domain="$1" days="${2:-3650}"
     ensure_openssl
     local cert_dir="${SELF_CERT_DIR}/${domain}"
     mkdir -p "$cert_dir"
     if [[ -f "${cert_dir}/fullchain.pem" ]]; then
-        success "自签名证书已存在: ${cert_dir}/"
-        return
+        success "自签名证书已存在: ${cert_dir}/"; return
     fi
     info "生成自签名证书（有效期 ${days} 天）..."
     openssl req -x509 -nodes -days "$days" \
@@ -325,7 +377,6 @@ cert_self_signed_auto() {
     success "自签名证书已生成: ${cert_dir}/"
 }
 
-# 命令行：cert issue（交互式）
 cmd_cert_issue() {
     require_root
     ensure_certbot
@@ -333,9 +384,9 @@ cmd_cert_issue() {
 
     while [[ $# -gt 0 ]]; do
         case $1 in
-            -d|--domain)  domain="$2";  shift 2 ;;
-            -e|--email)   email="$2";   shift 2 ;;
-            -m|--method)  method="$2";  shift 2 ;;
+            -d|--domain)  domain="$2";   shift 2 ;;
+            -e|--email)   email="$2";    shift 2 ;;
+            -m|--method)  method="$2";   shift 2 ;;
             --wildcard)   wildcard=true; shift ;;
             *) die "未知参数: $1" ;;
         esac
@@ -422,94 +473,6 @@ cmd_cert_auto_renew() {
     success "自动续期已配置（每天凌晨 3:00）: $cron_file"
 }
 
-# ──────────────────────────────────────────────────────────
-# 配置文件写入辅助：HTTP→HTTPS 重定向块
-# 参数：
-#   $1 domain       — server_name
-#   $2 https_port   — 目标 HTTPS 端口
-#   $3 http_port    — 来源 HTTP 端口（默认 80）
-# 规则：
-#   - 目标端口 443 时省略端口号（标准 HTTPS URL）
-#   - 来源端口 80 时同时监听 IPv4/IPv6
-#   - 非标准来源端口单独监听，避免占用 80
-# ──────────────────────────────────────────────────────────
-write_redirect_block() {
-    local domain="$1"
-    local https_port="$2"
-    local http_port="${3:-80}"
-
-    if [[ "$http_port" == "80" ]]; then
-        # 标准 80 端口：301 永久跳转到 HTTPS
-        local target_url
-        if [[ "$https_port" == "443" ]]; then
-            target_url="https://\$host\$request_uri"
-        else
-            target_url="https://\$host:${https_port}\$request_uri"
-        fi
-        cat <<EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $domain;
-    return 301 ${target_url};
-}
-
-EOF
-    else
-        # 非标准端口：444 直接关闭连接，不做跳转
-        # 非标准端口不会被浏览器主动访问，301 无意义；
-        # 444 静默关闭连接，强迫客户端直接使用正确的 HTTPS 地址。
-        cat <<EOF
-# 非标准 HTTP 端口 ${http_port}：直接拒绝，请使用 HTTPS:${https_port}
-server {
-    listen ${http_port};
-    server_name $domain;
-    return 444;
-}
-
-EOF
-        warn "HTTP:${http_port} 已设为 444 拒绝，请直接访问 https://${domain}:${https_port}/"
-    fi
-}
-
-#!/usr/bin/env bash
-# nginx_sites.sh — Nginx 站点配置生成器
-# 依赖外部函数：require_root / init_dirs / die / info / warn / success
-#               ask_ssl_params / resolve_ssl_cert / ssl_block
-#               write_redirect_block / normalize_url / _site_activate
-#               nginx_reload / check_sub_filter_module
-# 外部变量：WEBROOT_BASE / SITES_AVAILABLE / SITES_DIR / NGINX_CONF_DIR
-#           _SSL_MODE / _SSL_PORT / _SSL_HTTP_PORT / _SSL_301 / _SSL_CERT / _SSL_KEY
-#           RED / CYAN / NC
-
-set -euo pipefail
-
-# ══════════════════════════════════════════════════════════════════
-# 内部工具函数
-# ══════════════════════════════════════════════════════════════════
-
-# 检查端口是否已被其他站点占用
-_check_port_conflict() {
-    local port=$1
-    if grep -rq "listen[[:space:]]\+${port}[; ]" "${SITES_AVAILABLE}/" 2>/dev/null; then
-        warn "端口 ${port} 已在其他配置中使用，可能产生冲突"
-    fi
-}
-
-# 确保全局 WebSocket/HTTP Connection map 存在（幂等）
-_ensure_upgrade_map() {
-    local map_conf="${NGINX_CONF_DIR}/conf.d/00-map-upgrade.conf"
-    [[ -f "$map_conf" ]] && return 0
-    cat > "$map_conf" <<'EOF'
-# 动态决定 Connection 头：WebSocket 请求保持 upgrade，普通 HTTP 请求正常 close
-map $http_upgrade $connection_upgrade {
-    default  upgrade;
-    ''       close;
-}
-EOF
-    info "已生成 WebSocket map 配置: $map_conf"
-}
-
 # ══════════════════════════════════════════════════════════════════
 # 模式 A — 静态网站（可选 PHP-FPM）
 # ══════════════════════════════════════════════════════════════════
@@ -533,7 +496,6 @@ site_create_static() {
     resolve_ssl_cert "$domain"
     _check_port_conflict "$_SSL_PORT"
 
-    # 准备目录和默认首页
     mkdir -p "$web_dir"
     if [[ ! -f "${web_dir}/index.html" ]]; then
         cat > "${web_dir}/index.html" <<HTML
@@ -546,17 +508,14 @@ HTML
         || chown -R nginx:nginx "$(dirname "$web_dir")" 2>/dev/null \
         || true
 
-    # 构造 index 指令（按是否启用 PHP 决定）
     local index_directive="index.html index.htm"
     $php && index_directive+=" index.php"
 
     local conf_file="${SITES_AVAILABLE}/${domain}.conf"
     {
-        # HTTP → HTTPS 强制跳转块（可选）
         [[ "$_SSL_301" == "yes" ]] && write_redirect_block "$domain" "$_SSL_PORT" "$_SSL_HTTP_PORT"
 
         echo "server {"
-
         if [[ "$_SSL_MODE" != "none" ]]; then
             echo "    listen ${_SSL_PORT} ssl;"
             echo "    listen [::]:${_SSL_PORT} ssl;"
@@ -606,7 +565,7 @@ PHP
 }
 
 # ══════════════════════════════════════════════════════════════════
-# 模式 B — 反向代理（HTTP + WebSocket 自适应）
+# 模式 B — 反向代理（内网 IP:端口，HTTP + WebSocket 自适应）
 # ══════════════════════════════════════════════════════════════════
 site_create_proxy() {
     require_root
@@ -624,14 +583,13 @@ site_create_proxy() {
     ask_ssl_params
     resolve_ssl_cert "$domain"
     _check_port_conflict "$_SSL_PORT"
-    _ensure_upgrade_map   # 生成 $connection_upgrade map（幂等）
+    _ensure_upgrade_map
 
     local conf_file="${SITES_AVAILABLE}/${domain}.conf"
     {
         [[ "$_SSL_301" == "yes" ]] && write_redirect_block "$domain" "$_SSL_PORT" "$_SSL_HTTP_PORT"
 
         echo "server {"
-
         if [[ "$_SSL_MODE" != "none" ]]; then
             echo "    listen ${_SSL_PORT} ssl;"
             echo "    listen [::]:${_SSL_PORT} ssl;"
@@ -650,13 +608,12 @@ site_create_proxy() {
 CONF
         [[ "$_SSL_MODE" != "none" ]] && ssl_block "$_SSL_CERT" "$_SSL_KEY" && echo ""
 
-        # \$ 转义：写入文件时保留 nginx 变量
         cat <<CONF
     location / {
         proxy_pass          ${backend};
         proxy_http_version  1.1;
-        proxy_set_header    Upgrade    \$http_upgrade;
-        proxy_set_header    Connection \$connection_upgrade;
+        proxy_set_header    Upgrade           \$http_upgrade;
+        proxy_set_header    Connection        \$connection_upgrade;
         proxy_set_header    Host              \$host;
         proxy_set_header    X-Real-IP         \$remote_addr;
         proxy_set_header    X-Forwarded-For   \$proxy_add_x_forwarded_for;
@@ -692,17 +649,15 @@ site_create_mirror() {
     target_url=$(normalize_url "$target_url")
     target_host=$(awk -F/ '{print $3}' <<< "$target_url")
 
-    # 子模式选择
     echo ""
     echo -e "${CYAN}── 代理模式 ──${NC}"
-    echo "  1) 透传  — 原样转发响应 "
-    echo "  2) 镜像  — sub_filter 替换页面 "
+    echo "  1) 透传  — 原样转发响应，不改写内容（适合 API、外部服务）"
+    echo "  2) 镜像  — sub_filter 替换页面内域名引用（适合搬运网站）"
     local _mode=""
     read -rp "选择 [1-2，默认 1]: " _mode
     local rewrite=false
     [[ "${_mode:-1}" == "2" ]] && rewrite=true
 
-    # 镜像模式需要 sub_filter 模块
     $rewrite && check_sub_filter_module
 
     ask_ssl_params
@@ -710,7 +665,6 @@ site_create_mirror() {
     _check_port_conflict "$_SSL_PORT"
     _ensure_upgrade_map
 
-    # 镜像模式：收集额外资源域名
     local -a extra_locs=()
     if $rewrite; then
         echo ""
@@ -747,7 +701,6 @@ LOCEOF
         [[ "$_SSL_301" == "yes" ]] && write_redirect_block "$domain" "$_SSL_PORT" "$_SSL_HTTP_PORT"
 
         echo "server {"
-
         if [[ "$_SSL_MODE" != "none" ]]; then
             echo "    listen ${_SSL_PORT} ssl;"
             echo "    listen [::]:${_SSL_PORT} ssl;"
@@ -767,38 +720,36 @@ CONF
         [[ "$_SSL_MODE" != "none" ]] && ssl_block "$_SSL_CERT" "$_SSL_KEY" && echo ""
 
         if $rewrite; then
-            # 镜像模式：改写 Host 为目标域名，sub_filter 替换响应内链接
             cat <<CONF
     location / {
         proxy_pass         ${target_url};
         proxy_http_version 1.1;
-        proxy_set_header   Upgrade         \$http_upgrade;
-        proxy_set_header   Connection      \$connection_upgrade;
-        proxy_set_header   Host            ${target_host};
-        proxy_set_header   Referer         ${target_url};
-        proxy_set_header   Accept-Encoding "";
+        proxy_set_header   Upgrade           \$http_upgrade;
+        proxy_set_header   Connection        \$connection_upgrade;
+        proxy_set_header   Host              ${target_host};
+        proxy_set_header   Referer           ${target_url};
+        proxy_set_header   Accept-Encoding   "";
         proxy_ssl_server_name on;
 
-        sub_filter "</head>"                "<meta name='referrer' content='no-referrer'></head>";
-        sub_filter "${target_host}"         "${domain}";
-        sub_filter "https://${target_host}" "https://${domain}";
-        sub_filter "http://${target_host}"  "https://${domain}";
+        sub_filter "</head>"                 "<meta name='referrer' content='no-referrer'></head>";
+        sub_filter "${target_host}"          "${domain}";
+        sub_filter "https://${target_host}"  "https://${domain}";
+        sub_filter "http://${target_host}"   "https://${domain}";
         sub_filter_once  off;
         sub_filter_types *;
     }
 CONF
             [[ ${#extra_locs[@]} -gt 0 ]] && printf '%s\n' "${extra_locs[@]}"
         else
-            # 透传模式：保持 Host 为目标域名，不改写任何响应内容
             cat <<CONF
     location / {
         proxy_pass          ${target_url};
         proxy_http_version  1.1;
-        proxy_set_header    Upgrade         \$http_upgrade;
-        proxy_set_header    Connection      \$connection_upgrade;
-        proxy_set_header    Host            ${target_host};
-        proxy_set_header    X-Real-IP       \$remote_addr;
-        proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header    Upgrade           \$http_upgrade;
+        proxy_set_header    Connection        \$connection_upgrade;
+        proxy_set_header    Host              ${target_host};
+        proxy_set_header    X-Real-IP         \$remote_addr;
+        proxy_set_header    X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header    X-Forwarded-Proto \$scheme;
         proxy_cache_bypass  \$http_upgrade;
         proxy_ssl_server_name on;
@@ -828,7 +779,6 @@ site_create_forward_proxy() {
     warn "Nginx 原生仅支持 HTTP 正向代理，不支持 HTTPS CONNECT 隧道。"
     warn "如需完整 HTTPS 支持，请改用 Squid 或 3proxy。"
 
-    # 收集允许访问的 IP/网段（不填则仅允许内网三段）
     echo ""
     info "请输入允许使用此代理的 IP 或网段，回车跳过使用默认内网段"
     info "示例: 10.0.0.0/8  或  192.168.1.100"
@@ -840,7 +790,6 @@ site_create_forward_proxy() {
         allow_list+=("    allow ${_ip};")
     done
 
-    # 默认仅允许 RFC-1918 内网
     if [[ ${#allow_list[@]} -eq 0 ]]; then
         allow_list=(
             "    allow 10.0.0.0/8;"
@@ -864,13 +813,13 @@ server {
 $(printf '%s\n' "${allow_list[@]}")
         deny all;
 
-        proxy_pass              \$scheme://\$http_host\$request_uri;
-        proxy_set_header        Host             \$http_host;
-        proxy_set_header        X-Real-IP        \$remote_addr;
-        proxy_set_header        X-Forwarded-For  \$proxy_add_x_forwarded_for;
-        proxy_buffers           256 4k;
+        proxy_pass               \$scheme://\$http_host\$request_uri;
+        proxy_set_header         Host             \$http_host;
+        proxy_set_header         X-Real-IP        \$remote_addr;
+        proxy_set_header         X-Forwarded-For  \$proxy_add_x_forwarded_for;
+        proxy_buffers            256 4k;
         proxy_max_temp_file_size 0;
-        proxy_connect_timeout   30s;
+        proxy_connect_timeout    30s;
     }
 }
 EOF
@@ -884,11 +833,10 @@ EOF
 site_create_stream_proxy() {
     require_root
 
-    # 检测 stream 模块
     local nginx_v
     nginx_v=$(nginx -V 2>&1)
     if ! grep -q "with-stream" <<< "$nginx_v"; then
-        die "当前 Nginx 未编译 stream 模块，无法使用 TCP/UDP 流代理。\nDebian/Ubuntu 可执行: apt install nginx-full"
+        die "当前 Nginx 未编译 stream 模块。\nDebian/Ubuntu 可执行: apt install nginx-full"
     fi
     if ! grep -q "with-stream_ssl_module" <<< "$nginx_v"; then
         warn "未检测到 stream_ssl 模块，如需 TLS 透传请安装 nginx-full"
@@ -904,7 +852,7 @@ site_create_stream_proxy() {
     read -rp "协议 [tcp/udp，默认 tcp]: " proto
     [[ -z "$proto" ]] && proto="tcp"
 
-    # stream 块必须在顶层，不能放在 http {} include 目录内
+    # Fix: stream 块须在顶层，写入专用 stream.d/ 而非 conf.d/
     local stream_dir="${NGINX_CONF_DIR}/stream.d"
     mkdir -p "$stream_dir"
     local stream_conf="${stream_dir}/stream-${listen_port}.conf"
@@ -948,7 +896,7 @@ site_create_redirect() {
 
     read -rp "跳转目标 URL（如 https://new.example.com）: " target_url
     [[ -z "$target_url" ]] && die "目标 URL 不能为空"
-    target_url="${target_url%/}"  # 去掉末尾斜杠
+    target_url="${target_url%/}"
 
     echo ""
     echo -e "${CYAN}── 跳转类型 ──${NC}"
@@ -971,7 +919,7 @@ site_create_redirect() {
     local _path_choice=""
     read -rp "选择 [1-3，默认 1]: " _path_choice
 
-    # 提前声明 rules 数组，避免 HTTPS 块引用时未初始化
+    # Fix: 提前声明，避免 HTTPS 块引用时未初始化
     local -a rules=()
     if [[ "${_path_choice:-1}" == "3" ]]; then
         echo ""
@@ -1000,7 +948,7 @@ site_create_redirect() {
         resolve_ssl_cert "$src_domain"
     fi
 
-    # 生成 return 指令（根据路径模式）
+    # 提取为内部函数，消除 HTTP/HTTPS 两块的重复逻辑
     _redirect_return() {
         local c=$1
         case "${_path_choice:-1}" in
@@ -1022,7 +970,6 @@ site_create_redirect() {
         echo "# 生成时间: $(date)"
         echo ""
 
-        # HTTP 块
         echo "server {"
         echo "    listen 80;"
         echo "    listen [::]:80;"
@@ -1034,7 +981,6 @@ site_create_redirect() {
         _redirect_return "$code"
         echo "}"
 
-        # HTTPS 块（可选）
         if $has_ssl; then
             echo ""
             echo "server {"
@@ -1088,7 +1034,6 @@ site_create_loadbalance() {
         *) die "无效选项" ;;
     esac
 
-    # 收集后端节点
     echo ""
     info "请逐行输入后端节点（回车结束）"
     info "格式: IP:端口 [weight=N] [backup]"
@@ -1102,7 +1047,6 @@ site_create_loadbalance() {
     done
     [[ ${#servers[@]} -eq 0 ]] && die "至少需要一个后端节点"
 
-    # 健康检查参数
     local _mf="" _ft=""
     read -rp "max_fails（失败次数，默认 3）: " _mf
     read -rp "fail_timeout（不可用持续时间，默认 10s）: " _ft
@@ -1114,7 +1058,7 @@ site_create_loadbalance() {
     _check_port_conflict "$_SSL_PORT"
     _ensure_upgrade_map
 
-    # upstream 名用域名+短 hash，避免同名冲突
+    # Fix: 加短 hash 后缀，避免不同域名替换后同名冲突
     local upstream_name
     upstream_name="${domain//./_}_$(printf '%s' "$domain" | md5sum | cut -c1-6)_upstream"
 
@@ -1137,7 +1081,6 @@ site_create_loadbalance() {
         [[ "$_SSL_301" == "yes" ]] && write_redirect_block "$domain" "$_SSL_PORT" "$_SSL_HTTP_PORT"
 
         echo "server {"
-
         if [[ "$_SSL_MODE" != "none" ]]; then
             echo "    listen ${_SSL_PORT} ssl;"
             echo "    listen [::]:${_SSL_PORT} ssl;"
@@ -1206,45 +1149,57 @@ site_add_acl() {
     echo "  4) IP 白名单 + Basic Auth（双重保护）"
     read -rp "选择 [1-4]: " _acl_type
 
-    local acl_snippet=""
     local acl_conf_file="${NGINX_CONF_DIR}/conf.d/acl-${domain}.conf"
 
     case "${_acl_type:-1}" in
         1|2)
-            local ips=()
-            local action=""; local default_action=""
+            local -a ips=()
+            local action="" default_action=""
             if [[ "${_acl_type}" == "1" ]]; then
-                action="allow"; default_action="deny"
+                action="1"; default_action="0"
                 info "请逐行输入允许的 IP 或 CIDR（如 192.168.1.0/24），空行结束:"
             else
-                action="deny"; default_action="allow"
+                action="0"; default_action="1"
                 info "请逐行输入要拒绝的 IP 或 CIDR，空行结束:"
             fi
             while true; do
+                local _ip=""
                 read -rp "IP/CIDR: " _ip
                 [[ -z "$_ip" ]] && break
                 ips+=("$_ip")
             done
             [[ ${#ips[@]} -eq 0 ]] && die "至少输入一个 IP"
 
-            acl_snippet="# ACL — 生成时间: $(date)\ngeo \$blocked_ip {\n    default ${default_action};\n"
-            for ip in "${ips[@]}"; do
-                acl_snippet+="    ${ip} ${action};\n"
-            done
-            acl_snippet+="}\n"
+            # Fix: geo 值改用 0/1 整数，语义清晰且不与 nginx 指令名冲突
+            {
+                echo "# ACL — 生成时间: $(date)"
+                echo "geo \$ip_blocked {"
+                echo "    default ${default_action};"
+                for ip in "${ips[@]}"; do
+                    echo "    ${ip} ${action};"
+                done
+                echo "}"
+            } > "$acl_conf_file"
+            success "ACL geo 规则写入: $acl_conf_file"
 
-            # 将 geo 块写入 http 级别独立文件
-            printf "${acl_snippet}" > "$acl_conf_file"
-            success "ACL 规则写入: $acl_conf_file"
-
-            warn "请在站点 location / 块中手动添加: if (\$blocked_ip = deny) { return 403; }"
-            warn "或使用以下命令查看配置后手动编辑: $0 site edit ${domain}"
+            echo ""
+            success "请将以下指令添加到站点 location / 块中："
+            echo "────────────────────────────────"
+            if [[ "${_acl_type}" == "1" ]]; then
+                echo "    if (\$ip_blocked = 0) { return 403; }   # 不在白名单则拒绝"
+            else
+                echo "    if (\$ip_blocked = 1) { return 403; }   # 在黑名单则拒绝"
+            fi
+            echo "────────────────────────────────"
+            warn "请使用 $0 site edit ${domain} 打开编辑器添加上述指令"
+            warn "并确认 nginx.conf 的 http{} 中已 include /etc/nginx/conf.d/*.conf"
             ;;
 
         3|4)
-            # Basic Auth
-            command -v htpasswd &>/dev/null || install_pkg apache2-utils 2>/dev/null || \
-            install_pkg httpd-tools 2>/dev/null || die "无法安装 htpasswd，请手动安装 apache2-utils"
+            command -v htpasswd &>/dev/null \
+                || install_pkg apache2-utils 2>/dev/null \
+                || install_pkg httpd-tools 2>/dev/null \
+                || die "无法安装 htpasswd，请手动安装 apache2-utils"
 
             local auth_file="${NGINX_CONF_DIR}/.htpasswd-${domain}"
             local username=""
@@ -1254,30 +1209,27 @@ site_add_acl() {
             chmod 640 "$auth_file"
             success "密码文件已创建: $auth_file"
 
-            # 若同时要 IP 白名单
+            local -a snippet=()
             if [[ "${_acl_type}" == "4" ]]; then
-                local ips=()
+                local -a ips=()
                 info "请逐行输入允许的 IP 或 CIDR，空行结束:"
                 while true; do
+                    local _ip=""
                     read -rp "IP/CIDR: " _ip
                     [[ -z "$_ip" ]] && break
-                    ips+=("$_ip")
+                    ips+=("    allow ${_ip};")
                 done
-                acl_snippet="# IP+Auth 双重保护\n"
-                for ip in "${ips[@]}"; do
-                    acl_snippet+="allow ${ip};\n"
-                done
-                acl_snippet+="deny all;\n"
-                acl_snippet+="auth_basic \"Restricted\";\n"
-                acl_snippet+="auth_basic_user_file ${auth_file};\n"
-            else
-                acl_snippet="auth_basic \"Restricted\";\nauth_basic_user_file ${auth_file};\n"
+                snippet+=("${ips[@]}" "    deny all;")
             fi
+            snippet+=(
+                "    auth_basic \"Restricted\";"
+                "    auth_basic_user_file ${auth_file};"
+            )
 
             echo ""
             success "请将以下指令添加到站点 location / 块中："
             echo "────────────────────────────────"
-            printf "${acl_snippet}"
+            printf '%s\n' "${snippet[@]}"
             echo "────────────────────────────────"
             warn "使用 $0 site edit ${domain} 打开编辑器添加"
             ;;
@@ -1316,7 +1268,7 @@ site_add_ratelimit() {
 
     cat > "$rl_conf" <<EOF
 # 限流配置: ${domain}  生成时间: $(date)
-# 此文件需被 nginx.conf 的 http{} 块包含
+# 此文件由 nginx.conf 的 http{} 块自动 include
 limit_req_zone \$binary_remote_addr zone=${zone_name}:${_zone_size} rate=${_rate}r/s;
 limit_req_status 429;
 EOF
@@ -1327,15 +1279,13 @@ EOF
     echo "────────────────────────────────"
     echo "    limit_req zone=${zone_name} burst=${_burst}${nodelay_flag};"
     echo "────────────────────────────────"
-    warn "然后执行: $0 site edit ${domain} 打开编辑器添加上述指令"
+    warn "使用 $0 site edit ${domain} 打开编辑器添加上述指令"
     warn "并确认 nginx.conf 的 http{} 中已 include /etc/nginx/conf.d/*.conf"
 }
 
 # ──────────────────────────────────────────────────────────
 # 配置备份 & 还原
 # ──────────────────────────────────────────────────────────
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/nginx-gateway}"
-
 config_backup() {
     require_root
     mkdir -p "$BACKUP_DIR"
@@ -1345,12 +1295,13 @@ config_backup() {
 
     info "正在备份 Nginx 配置..."
 
-    local items=()
-    [[ -d "$SITES_AVAILABLE" ]] && items+=("$SITES_AVAILABLE")
-    [[ -d "$SITES_DIR"       ]] && items+=("$SITES_DIR")
-    [[ -d "$SELF_CERT_DIR"   ]] && items+=("$SELF_CERT_DIR")
-    [[ -d "${NGINX_CONF_DIR}/conf.d" ]] && items+=("${NGINX_CONF_DIR}/conf.d")
-    [[ -f "${NGINX_CONF_DIR}/nginx.conf" ]] && items+=("${NGINX_CONF_DIR}/nginx.conf")
+    local -a items=()
+    [[ -d "$SITES_AVAILABLE"              ]] && items+=("$SITES_AVAILABLE")
+    [[ -d "$SITES_DIR"                    ]] && items+=("$SITES_DIR")
+    [[ -d "$SELF_CERT_DIR"                ]] && items+=("$SELF_CERT_DIR")
+    [[ -d "${NGINX_CONF_DIR}/conf.d"      ]] && items+=("${NGINX_CONF_DIR}/conf.d")
+    [[ -d "${NGINX_CONF_DIR}/stream.d"    ]] && items+=("${NGINX_CONF_DIR}/stream.d")
+    [[ -f "${NGINX_CONF_DIR}/nginx.conf"  ]] && items+=("${NGINX_CONF_DIR}/nginx.conf")
 
     tar -czf "$backup_file" "${items[@]}" 2>/dev/null || true
 
@@ -1366,14 +1317,13 @@ config_restore() {
 
     echo ""
     info "可用的备份文件:"
-    local backups=()
+    local -a backups=()
     while IFS= read -r f; do
         backups+=("$f")
     done < <(ls -1t "${BACKUP_DIR}"/*.tar.gz 2>/dev/null || true)
 
     if [[ ${#backups[@]} -eq 0 ]]; then
-        warn "暂无备份文件（目录: ${BACKUP_DIR}）"
-        return
+        warn "暂无备份文件（目录: ${BACKUP_DIR}）"; return
     fi
 
     local i=1
@@ -1382,17 +1332,16 @@ config_restore() {
         ts=$(basename "$f" .tar.gz | sed 's/nginx-backup-//')
         size=$(du -sh "$f" 2>/dev/null | cut -f1)
         printf "  %2d) %s  [%s]\n" "$i" "$ts" "$size"
-        ((i++))
+        (( i++ ))
     done
     echo ""
     read -rp "选择备份序号 [1-${#backups[@]}]: " _idx
-    local _idx_n=$((_idx - 1))
-    local chosen="${backups[$_idx_n]:-}"
+    local chosen="${backups[$(( _idx - 1 ))]:-}"
     [[ -z "$chosen" || ! -f "$chosen" ]] && die "无效序号"
 
-    confirm "将用 $(basename "$chosen") 覆盖当前配置？此操作不可撤销！" || { info "已取消"; return; }
+    confirm "将用 $(basename "$chosen") 覆盖当前配置？此操作不可撤销！" \
+        || { info "已取消"; return; }
 
-    # 先备份当前配置
     info "先备份当前配置..."
     config_backup
 
@@ -1405,7 +1354,8 @@ config_restore() {
 config_backup_list() {
     echo -e "\n${BOLD}=== 备份文件列表 ===${NC}"
     if ls "${BACKUP_DIR}"/*.tar.gz &>/dev/null; then
-        ls -lht "${BACKUP_DIR}"/*.tar.gz | awk '{printf "  %-40s %s %s\n", $9, $5, $6" "$7}'
+        ls -lht "${BACKUP_DIR}"/*.tar.gz \
+            | awk '{printf "  %-40s %s %s\n", $9, $5, $6" "$7}'
     else
         echo "  暂无备份（目录: ${BACKUP_DIR}）"
     fi
@@ -1420,8 +1370,11 @@ _site_activate() {
     local avail="${SITES_AVAILABLE}/${domain}.conf"
     local enabled="${SITES_DIR}/${domain}.conf"
 
-    # 首次激活任意站点时，自动移除 default
-    [[ -e "${SITES_DIR}/default" ]] && rm -f "${SITES_DIR}/default" && echo "已移除默认站点 default"
+    # Fix: 仅在 default 文件确实存在时提示，静默删除，避免每次都输出
+    if [[ -e "${SITES_DIR}/default" ]]; then
+        rm -f "${SITES_DIR}/default"
+        info "已移除默认站点 default"
+    fi
 
     ln -sf "$avail" "$enabled"
     success "配置已写入: $avail"
@@ -1454,7 +1407,7 @@ site_disable() {
 
 site_delete() {
     require_root
-    local domain="${1:-}" del_files=false
+    local domain="${1:-}"
     [[ -z "$domain" ]] && read -rp "域名: " domain
     confirm "确认删除站点 ${domain} 的配置？" || { info "已取消"; return; }
     rm -f "${SITES_DIR}/${domain}.conf" "${SITES_AVAILABLE}/${domain}.conf"
@@ -1473,25 +1426,29 @@ site_list() {
     echo -e "${BOLD}╠══════════════════════════════════════════════════╣${NC}"
 
     local found=false
-    for conf in "${SITES_AVAILABLE}"/*.conf "${SITES_DIR}"/forward-proxy-*.conf \
-                "${NGINX_CONF_DIR}"/conf.d/stream-*.conf; do
-        [[ -f "$conf" ]] || continue; found=true
+    # Fix: stream 配置路径改为 stream.d/，正向代理从 SITES_AVAILABLE 扫描
+    for conf in "${SITES_AVAILABLE}"/*.conf \
+                "${NGINX_CONF_DIR}"/stream.d/stream-*.conf; do
+        [[ -f "$conf" ]] || continue
+        found=true
         local name; name=$(basename "$conf" .conf)
         local status="${RED}禁用${NC}"
-        [[ -L "${SITES_DIR}/${name}.conf" || "$conf" == "${SITES_DIR}"/* ]] && \
-            status="${GREEN}启用${NC}"
+        [[ -L "${SITES_DIR}/${name}.conf" ]] && status="${GREEN}启用${NC}"
 
+        # Fix: 类型检测加守卫，防止后续条件覆盖已判定类型
         local type="静态文件"
-        grep -q "upstream"        "$conf" 2>/dev/null && type="负载均衡"
-        grep -q "sub_filter"      "$conf" 2>/dev/null && type="镜像聚合"
-        grep -q "proxy_pass"      "$conf" 2>/dev/null && [[ "$type" == "静态文件" ]] && type="反向代理"
-        grep -q "stream"          "$conf" 2>/dev/null && type="流代理"
-        grep -q "forward"         "$name" 2>/dev/null && type="正向代理"
-        grep -qE "return [0-9]{3}" "$conf" 2>/dev/null && \
-            ! grep -q "proxy_pass\|root " "$conf" 2>/dev/null && type="跳转重定向"
+        grep -q "upstream"    "$conf" 2>/dev/null && type="负载均衡"
+        grep -q "sub_filter"  "$conf" 2>/dev/null && [[ "$type" == "静态文件" ]] && type="镜像聚合"
+        grep -q "proxy_pass"  "$conf" 2>/dev/null && [[ "$type" == "静态文件" ]] && type="反向代理"
+        grep -q "stream {"    "$conf" 2>/dev/null && type="流代理"
+        [[ "$name" == forward-proxy-* ]]           && type="正向代理"
+        grep -qE "return [0-9]{3}" "$conf" 2>/dev/null \
+            && ! grep -q "proxy_pass\|root " "$conf" 2>/dev/null \
+            && type="跳转重定向"
         grep -q "ssl_certificate" "$conf" 2>/dev/null && type+=" [SSL]"
 
-        printf "${BOLD}║${NC}  %-28s %-18b %-10s  ${BOLD}║${NC}\n" "$name" "$status" "$type"
+        printf "${BOLD}║${NC}  %-28s %-18b %-10s  ${BOLD}║${NC}\n" \
+            "$name" "$status" "$type"
     done
     $found || echo "  暂无站点配置"
     echo -e "${BOLD}╚══════════════════════════════════════════════════╝${NC}\n"
@@ -1500,9 +1457,13 @@ site_list() {
 site_info() {
     local domain="${1:-}"
     [[ -z "$domain" ]] && read -rp "域名: " domain
+
+    # Fix: 正向代理也在 SITES_AVAILABLE
     local conf="${SITES_AVAILABLE}/${domain}.conf"
-    [[ -f "$conf" ]] || conf="${SITES_DIR}/forward-proxy-${domain}.conf"
-    [[ -f "$conf" ]] || die "配置不存在"
+    [[ ! -f "$conf" ]] && conf="${SITES_AVAILABLE}/forward-proxy-${domain}.conf"
+    [[ ! -f "$conf" ]] && conf="${NGINX_CONF_DIR}/stream.d/stream-${domain}.conf"
+    [[ ! -f "$conf" ]] && die "配置不存在"
+
     echo -e "\n${BOLD}=== $domain ===${NC}"
     cat "$conf"
 }
@@ -1530,12 +1491,12 @@ ${BOLD}用法:${NC}
   $0                      （无参数，进入交互式主菜单）
 
 ${BOLD}站点创建:${NC}
-  site static             静态文件托管（PHP / 自定义端口 / 多种 SSL 模式）
-  site proxy              反向代理（WebSocket 穿透 / 自定义 Header）
-  site mirror             镜像/多源聚合（sub_filter 内容替换）
-  site forward            HTTP 正向代理
+  site static             静态文件托管（可选 PHP / 自定义端口 / 多种 SSL 模式）
+  site proxy              反向代理（内网 IP:端口，WebSocket 自适应）
+  site mirror             外部域名代理（透传 / 镜像两种子模式）
+  site forward            HTTP 正向代理（含 IP 白名单）
   site stream             TCP/UDP 流代理（需 stream 模块）
-  site redirect           域名跳转（301/302/307/308，路径保留/整站/精确规则）
+  site redirect           域名跳转（301/302/307/308，多种路径策略）
   site loadbalance        负载均衡（upstream 多节点，含健康检查）
 
 ${BOLD}站点管理:${NC}
@@ -1570,28 +1531,15 @@ ${BOLD}Nginx 控制:${NC}
   nginx restart           重启 Nginx
   nginx status            查看运行状态
 
-${BOLD}SSL 模式（站点创建时交互选择）:${NC}
-  1-auto          根据域名自动扫描常见证书路径（acme.sh / certbot / 自定义）
-  2-manual        手动指定证书/私钥文件路径
-  3-letsencrypt   自动申请 Let's Encrypt（需域名已解析且 80 端口可访问）
-  4-self          生成自签名证书（本地/内网开发）
-  5-none          纯 HTTP，不使用 SSL
-
-${BOLD}跳转类型说明:${NC}
-  301   永久跳转，浏览器/搜索引擎缓存，适合换域名
-  302   临时跳转，不缓存，适合维护期
-  307   临时跳转，严格保留 POST 等请求方法
-  308   永久跳转，严格保留 POST 等请求方法
-
 ${BOLD}示例:${NC}
   sudo $0                                           # 进入交互式菜单
+  sudo $0 site proxy                                # 创建反向代理
+  sudo $0 site mirror                               # 外部域名透传或镜像
   sudo $0 site redirect                             # 创建跳转规则
-  sudo $0 site loadbalance                          # 配置负载均衡
   sudo $0 site acl                                  # 添加 IP 访问控制
   sudo $0 cert issue -d example.com -e me@a.com    # 申请 LE 证书
-  sudo $0 cert issue -d example.com -e me@a.com --wildcard  # 泛域名证书
+  sudo $0 cert issue -d example.com -e me@a.com --wildcard
   sudo $0 backup create                             # 备份配置
-  sudo $0 site disable old.example.com             # 禁用站点
 
 HELP
 }
@@ -1609,9 +1557,10 @@ interactive_menu() {
         echo -e "${NC}"
         echo -e " ${CYAN}── 站点创建 ──${NC}"
         echo "  1) 静态文件托管（PHP / 自定义端口 / SSL）"
-        echo "  2) 反向代理（WebSocket / HTTP 穿透）"
-        echo "  3) 镜像 / 多源聚合（sub_filter 内容替换）"
-        echo "  4) HTTP 正向代理"
+        echo "  2) 反向代理（内网服务，WebSocket 自适应）"
+        # Fix: 菜单描述与合并后的模式 C 保持一致
+        echo "  3) 外部域名代理（透传 / 镜像两种子模式）"
+        echo "  4) HTTP 正向代理（含 IP 白名单）"
         echo "  5) TCP/UDP 流代理（stream 模块）"
         echo "  6) 域名跳转（301/302/307/308 重定向）"
         echo "  7) 负载均衡（upstream 多节点）"
@@ -1648,35 +1597,39 @@ interactive_menu() {
         read -rp "请选择 [0-25]: " choice
 
         case "$choice" in
-            1)  site_create_static ;;
-            2)  site_create_proxy ;;
-            3)  site_create_mirror ;;
-            4)  site_create_forward_proxy ;;
-            5)  site_create_stream_proxy ;;
-            6)  site_create_redirect ;;
-            7)  site_create_loadbalance ;;
-            8)  site_list; read -rp "按回车继续..." _ ;;
-            9)  site_enable ;;
-           10)  site_disable ;;
-           11)  site_delete ;;
-           12)  read -rp "域名（查看 info）或输入 e<域名>（编辑）: " _inp
-                [[ "$_inp" == e* ]] && site_edit "${_inp#e}" || site_info "$_inp"
-                read -rp "按回车继续..." _ ;;
-           13)  site_add_acl ;;
-           14)  site_add_ratelimit ;;
-           15)  cmd_cert_issue ;;
-           16)  cmd_cert_self_signed ;;
-           17)  read -rp "域名（留空续期全部）: " _d; cmd_cert_renew "${_d:-}" ;;
-           18)  cmd_cert_list; read -rp "按回车继续..." _ ;;
-           19)  cmd_cert_auto_renew ;;
-           20)  config_backup ;;
-           21)  config_restore ;;
-           22)  config_backup_list; read -rp "按回车继续..." _ ;;
-           23)  nginx_reload ;;
-           24)  nginx_restart ;;
-           25)  nginx_status; read -rp "按回车继续..." _ ;;
-            0)  echo "再见！"; exit 0 ;;
-            *)  warn "无效选项，请重试" ;;
+             1) site_create_static ;;
+             2) site_create_proxy ;;
+             3) site_create_mirror ;;
+             4) site_create_forward_proxy ;;
+             5) site_create_stream_proxy ;;
+             6) site_create_redirect ;;
+             7) site_create_loadbalance ;;
+             8) site_list; read -rp "按回车继续..." _ ;;
+             9) site_enable ;;
+            10) site_disable ;;
+            11) site_delete ;;
+            12)
+                echo "  v) 查看配置    e) 编辑配置"
+                read -rp "选择 [v/e]: " _act
+                read -rp "域名: " _d
+                [[ "${_act,,}" == "e" ]] && site_edit "$_d" || site_info "$_d"
+                read -rp "按回车继续..." _
+                ;;
+            13) site_add_acl ;;
+            14) site_add_ratelimit ;;
+            15) cmd_cert_issue ;;
+            16) cmd_cert_self_signed ;;
+            17) read -rp "域名（留空续期全部）: " _d; cmd_cert_renew "${_d:-}" ;;
+            18) cmd_cert_list; read -rp "按回车继续..." _ ;;
+            19) cmd_cert_auto_renew ;;
+            20) config_backup ;;
+            21) config_restore ;;
+            22) config_backup_list; read -rp "按回车继续..." _ ;;
+            23) nginx_reload ;;
+            24) nginx_restart ;;
+            25) nginx_status; read -rp "按回车继续..." _ ;;
+             0) echo "再见！"; exit 0 ;;
+             *) warn "无效选项，请重试" ;;
         esac
         echo ""
     done
@@ -1697,46 +1650,46 @@ main() {
     case "${cmd}" in
         site)
             case "${sub}" in
-                static)       site_create_static ;;
-                proxy)        site_create_proxy ;;
-                mirror)       site_create_mirror ;;
-                forward)      site_create_forward_proxy ;;
-                stream)       site_create_stream_proxy ;;
-                redirect)     site_create_redirect ;;
-                loadbalance)  site_create_loadbalance ;;
-                acl)          site_add_acl ;;
-                ratelimit)    site_add_ratelimit ;;
-                enable)       site_enable "${1:-}" ;;
-                disable)      site_disable "${1:-}" ;;
-                delete)       site_delete "${1:-}" ;;
-                list)         site_list ;;
-                info)         site_info "${1:-}" ;;
-                edit)         site_edit "${1:-}" ;;
-                *)            show_help ;;
+                static)      site_create_static ;;
+                proxy)       site_create_proxy ;;
+                mirror)      site_create_mirror ;;
+                forward)     site_create_forward_proxy ;;
+                stream)      site_create_stream_proxy ;;
+                redirect)    site_create_redirect ;;
+                loadbalance) site_create_loadbalance ;;
+                acl)         site_add_acl ;;
+                ratelimit)   site_add_ratelimit ;;
+                enable)      site_enable "${1:-}" ;;
+                disable)     site_disable "${1:-}" ;;
+                delete)      site_delete "${1:-}" ;;
+                list)        site_list ;;
+                info)        site_info "${1:-}" ;;
+                edit)        site_edit "${1:-}" ;;
+                *)           show_help ;;
             esac ;;
         cert)
             case "${sub}" in
-                issue)        cmd_cert_issue "$@" ;;
-                self-signed)  cmd_cert_self_signed "$@" ;;
-                renew)        cmd_cert_renew "${1:-}" ;;
-                list)         cmd_cert_list ;;
-                auto-renew)   cmd_cert_auto_renew ;;
-                *)            show_help ;;
+                issue)       cmd_cert_issue "$@" ;;
+                self-signed) cmd_cert_self_signed "$@" ;;
+                renew)       cmd_cert_renew "${1:-}" ;;
+                list)        cmd_cert_list ;;
+                auto-renew)  cmd_cert_auto_renew ;;
+                *)           show_help ;;
             esac ;;
         backup)
             case "${sub}" in
-                create)       config_backup ;;
-                restore)      config_restore ;;
-                list)         config_backup_list ;;
-                *)            show_help ;;
+                create)      config_backup ;;
+                restore)     config_restore ;;
+                list)        config_backup_list ;;
+                *)           show_help ;;
             esac ;;
         nginx)
             case "${sub}" in
-                install)      check_and_install_nginx ;;
-                reload)       nginx_reload ;;
-                restart)      nginx_restart ;;
-                status)       nginx_status ;;
-                *)            show_help ;;
+                install)     check_and_install_nginx ;;
+                reload)      nginx_reload ;;
+                restart)     nginx_restart ;;
+                status)      nginx_status ;;
+                *)           show_help ;;
             esac ;;
         help|--help|-h) show_help ;;
         *) show_help ;;
