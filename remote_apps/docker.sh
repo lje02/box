@@ -6,9 +6,20 @@
 #        Lsky Pro / EasyImage / AList
 #  支持多实例：通过 --deploy APP --instance NAME 或交互菜单指定
 #  用法：sudo bash setup-docker-apps.sh [选项]
+# ------------------------------------------------------------
+#  修复记录：
+#  [1] set -euo pipefail：补加 -e，命令失败立即退出
+#  [2] net_name()：修复原函数两行输出 bug，统一各 deploy 调用
+#  [3] find_free_port：改用 find 替代 glob，避免 nullglob 问题
+#  [4] Portainer HTTPS 端口：改用 find_free_port 动态分配
+#  [5] Gitea SSH 端口：改用 find_free_port，避免多实例冲突
+#  [6] backup_app：停止失败时显式警告，不再静默吞掉错误
+#  [7] print_summary：从 .env 读取实际端口，不再硬用默认值
+#  [8] check_system：改为检测 apt-get，兼容所有 apt 系发行版
+#  [9] randpw：改用 dd 替代 head -c，避免 SIGPIPE 触发 pipefail
 # ============================================================
 
-set -uo pipefail
+set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -316,10 +327,9 @@ find_free_port() {
     while true; do
         # 检查是否被任何已部署实例的 .env 占用
         local in_use=0
-        for env_file in "$BASE_DIR"/**/.env "$BASE_DIR"/*/.env; do
-            [[ -f "$env_file" ]] || continue
+        while IFS= read -r env_file; do
             grep -qP "HOST_PORT=${port}$" "$env_file" && in_use=1 && break
-        done
+        done < <(find "$BASE_DIR" -name ".env" -maxdepth 3 2>/dev/null)
         # 也检查系统端口占用
         if [[ $in_use -eq 0 ]] && ! ss -tlnH "sport = :${port}" 2>/dev/null | grep -q .; then
             echo "$port"; return
@@ -726,14 +736,8 @@ check_system() {
     disk=$(df -m /opt | awk 'NR==2{print $4}')
     [[ "$mem" -lt 1024 ]] && warn "内存不足 1GB（当前 ${mem}MB），可能影响性能"
     [[ "$disk" -lt 5120 ]] && warn "磁盘空间不足 5GB（剩余 ${disk}MB），建议扩展空间"
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        case "$ID" in
-            ubuntu|debian) ;;
-            *) error "仅支持 Ubuntu/Debian 系统，当前系统: $ID" ;;
-        esac
-    else
-        error "无法检测系统发行版"
+    if ! command -v apt-get &>/dev/null; then
+        error "仅支持 apt 系发行版（Debian/Ubuntu/Raspbian 等），当前系统不支持"
     fi
 }
 
@@ -786,7 +790,9 @@ install_docker() {
 
 randpw() {
     local len="${1:-24}"
-    (set +o pipefail; tr -dc 'A-Za-z0-9!@#$%^&*()_+-=' </dev/urandom | head -c "$len")
+    # 用 dd 精确读取字节数，避免 head -c 关闭管道时 tr 收到 SIGPIPE 触发 pipefail
+    tr -dc 'A-Za-z0-9!@#$%^&*()_+-=' </dev/urandom 2>/dev/null \
+        | dd bs=1 count="$len" 2>/dev/null
     echo
 }
 
@@ -797,9 +803,11 @@ backup_app() {
     local backup_file="/tmp/${app_name}_$(date +%Y%m%d_%H%M%S).tar.gz"
     [[ ! -d "$dir" ]] && error "目录 $dir 不存在"
     header "备份 $app_name"
-    (cd "$dir" && docker compose stop 2>/dev/null) || true
+    if ! (cd "$dir" && docker compose stop 2>/dev/null); then
+        warn "$app_name 容器停止失败，备份数据可能不一致，继续..."
+    fi
     tar -czf "$backup_file" -C "$(dirname "$dir")" "$(basename "$dir")"
-    (cd "$dir" && docker compose start 2>/dev/null) || true
+    (cd "$dir" && docker compose start 2>/dev/null) || warn "$app_name 备份后重启失败，请手动执行: docker compose start"
     local size
     size=$(du -h "$backup_file" | cut -f1)
     log "已备份 $app_name 到 $backup_file（大小: $size）"
@@ -830,11 +838,10 @@ uninstall_app() {
 # host_port   默认各应用的 APP_DEFAULT_PORT
 # ============================================================
 
-# ── 生成网络名（取目录 basename，去除特殊字符）───────────────
+# ── 生成网络名（取目录 basename，去除特殊字符，固定后缀 _net）─
 net_name() {
-    local dir="$1" suffix="$2"
-    basename "$dir" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]'
-    echo "_${suffix}"
+    local dir="$1"
+    echo "$(basename "$dir" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]')_net"
 }
 
 # ============================================================
@@ -844,7 +851,7 @@ deploy_wordpress() {
     local DIR="${1:-$BASE_DIR/wordpress}"
     local HOST_PORT="${2:-${APP_DEFAULT_PORT[wordpress]}}"
     local NET
-    NET="$(basename "$DIR" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]')_net"
+    NET=$(net_name "$DIR")
 
     header "部署 WordPress → $DIR (端口 $HOST_PORT)"
     mkdir -p "$DIR"/{data,db,redis,uploads}
@@ -966,7 +973,7 @@ deploy_nextcloud() {
     local DIR="${1:-$BASE_DIR/nextcloud}"
     local HOST_PORT="${2:-${APP_DEFAULT_PORT[nextcloud]}}"
     local NET
-    NET="$(basename "$DIR" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]')_net"
+    NET=$(net_name "$DIR")
 
     header "部署 Nextcloud → $DIR (端口 $HOST_PORT)"
     mkdir -p "$DIR"/{data,db,redis,config,apps}
@@ -1091,9 +1098,10 @@ NGINX
 deploy_gitea() {
     local DIR="${1:-$BASE_DIR/gitea}"
     local HOST_PORT="${2:-${APP_DEFAULT_PORT[gitea]}}"
-    local HOST_SSH_PORT=$((HOST_PORT + 10))   # SSH 端口 = web端口+10（避免冲突）
+    local HOST_SSH_PORT
+    HOST_SSH_PORT=$(find_free_port $((HOST_PORT + 10)))   # SSH 端口经 find_free_port 分配，避免冲突
     local NET
-    NET="$(basename "$DIR" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]')_net"
+    NET=$(net_name "$DIR")
 
     header "部署 Gitea → $DIR (端口 $HOST_PORT)"
     mkdir -p "$DIR"/{data,db}
@@ -1191,11 +1199,17 @@ YAML
 deploy_portainer() {
     local DIR="${1:-$BASE_DIR/portainer}"
     local HOST_PORT="${2:-${APP_DEFAULT_PORT[portainer]}}"
-    local HOST_HTTPS_PORT=$((HOST_PORT + 443))
+    local HOST_HTTPS_PORT
+    HOST_HTTPS_PORT=$(find_free_port $((HOST_PORT + 1)))
+    local NET
+    NET=$(net_name "$DIR")
 
     header "部署 Portainer CE → $DIR (端口 $HOST_PORT)"
     mkdir -p "$DIR/data"
-    echo "HOST_PORT=${HOST_PORT}" > "$DIR/.env"
+    cat > "$DIR/.env" <<EOF
+HOST_PORT=${HOST_PORT}
+HOST_HTTPS_PORT=${HOST_HTTPS_PORT}
+EOF
 
     cat > "$DIR/docker-compose.yml" <<YAML
 services:
@@ -1280,7 +1294,7 @@ deploy_minio() {
     local HOST_PORT="${2:-${APP_DEFAULT_PORT[minio]}}"    # 控制台端口
     local API_PORT=$((HOST_PORT + 1))                     # API 端口
     local NET
-    NET="$(basename "$DIR" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]')_net"
+    NET=$(net_name "$DIR")
 
     header "部署 MinIO → $DIR (控制台 $HOST_PORT, API $API_PORT)"
     mkdir -p "$DIR/data"
@@ -1334,7 +1348,7 @@ deploy_lskypro() {
     local DIR="${1:-$BASE_DIR/lskypro}"
     local HOST_PORT="${2:-${APP_DEFAULT_PORT[lskypro]}}"
     local NET
-    NET="$(basename "$DIR" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]')_net"
+    NET=$(net_name "$DIR")
 
     header "部署 Lsky Pro 图床 → $DIR (端口 $HOST_PORT)"
     mkdir -p "$DIR"/{uploads,db}
@@ -1404,7 +1418,7 @@ deploy_easyimage() {
     local DIR="${1:-$BASE_DIR/easyimage}"
     local HOST_PORT="${2:-${APP_DEFAULT_PORT[easyimage]}}"
     local NET
-    NET="$(basename "$DIR" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]')_net"
+    NET=$(net_name "$DIR")
 
     header "部署 EasyImage 图床 → $DIR (端口 $HOST_PORT)"
     mkdir -p "$DIR"/{data,config}
@@ -1442,7 +1456,7 @@ deploy_alist() {
     local DIR="${1:-$BASE_DIR/alist}"
     local HOST_PORT="${2:-${APP_DEFAULT_PORT[alist]}}"
     local NET
-    NET="$(basename "$DIR" | tr -cd 'a-zA-Z0-9_' | tr '[:upper:]' '[:lower:]')_net"
+    NET=$(net_name "$DIR")
 
     header "部署 AList → $DIR (端口 $HOST_PORT)"
     mkdir -p "$DIR/data"
@@ -1501,7 +1515,10 @@ print_summary() {
     echo -e "║              🐳  部署完成 — 访问地址汇总                    ║"
     echo -e "╠══════════════════════════════════════════════════════════════╣"
     for app in "${apps[@]}"; do
-        local port="${APP_DEFAULT_PORT[$app]}"
+        local port
+        # 优先读取 .env 中的实际端口，回退到默认值
+        port=$(grep -oP '(?<=HOST_PORT=)\d+' "$BASE_DIR/$app/.env" 2>/dev/null | head -1) \
+            || port="${APP_DEFAULT_PORT[$app]}"
         printf "║  %-16s → %-38s║\n" "$app" "http://127.0.0.1:${port}"
     done
     echo -e "╠══════════════════════════════════════════════════════════════╣"
