@@ -1532,6 +1532,107 @@ add_outbound() {
         fi
     }
 
+    while true; do
+        clear
+        echo -e "${YELLOW}--- 添加出站节点 ---${PLAIN}"
+        echo "1. 粘贴单条链接 (SS/Socks5/HTTPS/VLESS/Trojan/Hysteria2/TUIC)"
+        echo "2. 手动输入 (SS / Socks5 / HTTPS)"
+        echo "3. 订阅导入 (URL 或本地文件，批量解析)"
+        echo "0. 返回主菜单"
+        echo "---"
+        read -p "选择 [0-3]: " node_type
+        [[ "$node_type" == "0" ]] && break
+
+        if [[ "$node_type" == "1" ]]; then
+            read -p "节点链接: " RAW_LINK
+            parse_proxy_link "$RAW_LINK"
+            if [[ -z "$R_ADDR" ]]; then echo -e "${RED}✘ 解析失败${PLAIN}"; pause; continue; fi
+            local name_safe; name_safe=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
+            local OUT_TAG="${name_safe:-hop-$(date +%s)}"
+            local OUT_JSON; OUT_JSON=$(link_to_outbound_json "$OUT_TAG")
+            [[ -z "$OUT_JSON" ]] && echo -e "${RED}✘ 不支持协议 (hop_type=$hop_type)${PLAIN}" && pause && continue
+            _write_one_node "$OUT_TAG" "$OUT_JSON"
+
+        elif [[ "$node_type" == "2" ]]; then
+            echo "1) SS  2) Socks5  3) HTTPS"
+            read -p "协议: " proto_choice
+            read -p "地址: " R_ADDR; read -p "端口: " R_PORT
+            R_USER=""; R_PASS=""; R_METHOD=""; R_TLS_INSECURE="0"
+            local OUT_TAG="hop-$(date +%s)" OUT_JSON
+            case $proto_choice in
+                1) read -p "加密: " R_METHOD; read -p "密码: " R_PASS; hop_type=1 ;;
+                2) read -p "用户 (可选): " R_USER; read -p "密码 (可选): " R_PASS; hop_type=2 ;;
+                3) read -p "用户 (可选): " R_USER; read -p "密码 (可选): " R_PASS
+                   read -p "跳过证书验证? [y/N]: " _sk
+                   [[ "$_sk" =~ ^[yY]$ ]] && R_TLS_INSECURE="1"
+                   hop_type=3 ;;
+                *) echo -e "${RED}非法输入${PLAIN}"; continue ;;
+            esac
+            OUT_JSON=$(link_to_outbound_json "$OUT_TAG")
+            _write_one_node "$OUT_TAG" "$OUT_JSON"
+
+        elif [[ "$node_type" == "3" ]]; then
+            clear; echo -e "${YELLOW}--- 订阅导入 ---${PLAIN}"
+            echo "1. 从 URL 拉取  2. 本地文件  0. 返回"
+            read -p "选择: " sub_mode; [[ "$sub_mode" == "0" ]] && continue
+            local raw_content=""
+            if [[ "$sub_mode" == "1" ]]; then
+                read -p "订阅 URL: " SUB_URL; [[ -z "$SUB_URL" ]] && continue
+                echo -e "${CYAN}拉取订阅...${PLAIN}"
+                raw_content=$(curl -sL --connect-timeout 10 --max-time 30 "$SUB_URL")
+                [[ -z "$raw_content" ]] && echo -e "${RED}✘ 拉取失败${PLAIN}" && pause && continue
+            elif [[ "$sub_mode" == "2" ]]; then
+                read -p "本地文件路径: " SUB_FILE
+                [[ ! -f "$SUB_FILE" ]] && echo -e "${RED}✘ 文件不存在${PLAIN}" && pause && continue
+                raw_content=$(cat "$SUB_FILE")
+            else continue; fi
+
+            local link_list="" decoded
+            decoded=$(echo "$raw_content" | tr -d '\r\n ' | base64 -d 2>/dev/null)
+            if echo "$decoded" | grep -qE '^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic)://'; then
+                link_list="$decoded"; echo -e "${CYAN}检测到 Base64 编码订阅，已解码${PLAIN}"
+            elif echo "$raw_content" | grep -qE '^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic)://'; then
+                link_list="$raw_content"; echo -e "${CYAN}检测到明文链接订阅${PLAIN}"
+            else
+                echo -e "${RED}✘ 无法识别订阅格式${PLAIN}"; pause; continue; fi
+
+            local total=0 ok=0 fail=0
+            while IFS= read -r line; do
+                [[ -z "$line" || "$line" =~ ^# ]] && continue
+                [[ ! "$line" =~ ^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic):// ]] && continue
+                ((total++))
+                parse_proxy_link "$line"
+                if [[ -z "$R_ADDR" ]]; then
+                    echo -e "${RED}  [$total] 解析失败: ${line:0:60}${PLAIN}"; ((fail++)); continue; fi
+                local name_safe; name_safe=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
+                local base_tag="${name_safe:-sub-$total}" final_tag dup=1
+                final_tag="$base_tag"
+                while jq -e --arg t "$final_tag" '.outbounds[] | select(.tag==$t)' \
+                    "$CONFIG_FILE" > /dev/null 2>&1; do
+                    final_tag="${base_tag}-${dup}"; ((dup++)); done
+                local node_json; node_json=$(link_to_outbound_json "$final_tag")
+                if [[ -z "$node_json" ]]; then
+                    echo -e "${YELLOW}  [$total] 不支持协议，跳过: $R_ADDR${PLAIN}"; ((fail++)); continue; fi
+                make_tmp
+                jq --argjson obj "$node_json" '.outbounds += [$obj]' "$CONFIG_FILE" > "$_TMP_JSON"
+                if $SB_BIN check -c "$_TMP_JSON" > /dev/null 2>&1; then
+                    mv "$_TMP_JSON" "$CONFIG_FILE"; _TMP_JSON=""
+                    echo -e "${GREEN}  [$total] ✔ $final_tag ($R_ADDR:$R_PORT)${PLAIN}"; ((ok++))
+                else
+                    rm -f "$_TMP_JSON"; _TMP_JSON=""
+                    echo -e "${RED}  [$total] ✖ 校验失败: $R_ADDR${PLAIN}"; ((fail++)); fi
+            done <<< "$link_list"
+
+            echo -e "\n${YELLOW}共 $total 条，成功 ${GREEN}$ok${PLAIN}${YELLOW}，失败 ${RED}$fail${PLAIN}${YELLOW} 条${PLAIN}"
+            if (( ok > 0 )); then
+                systemctl restart sing-box && \
+                    echo -e "${GREEN}✔ 重启完成，$ok 节点已生效${PLAIN}" || \
+                    echo -e "${RED}✘ 重启失败，请检查配置${PLAIN}"
+            fi
+        fi
+        pause
+    done
+}
 # ============================================================
 # 节点订阅主管理模块
 # ============================================================
@@ -1660,108 +1761,6 @@ EOF
             0) return ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
-    done
-}
-
-    while true; do
-        clear
-        echo -e "${YELLOW}--- 添加出站节点 ---${PLAIN}"
-        echo "1. 粘贴单条链接 (SS/Socks5/HTTPS/VLESS/Trojan/Hysteria2/TUIC)"
-        echo "2. 手动输入 (SS / Socks5 / HTTPS)"
-        echo "3. 订阅导入 (URL 或本地文件，批量解析)"
-        echo "0. 返回主菜单"
-        echo "---"
-        read -p "选择 [0-3]: " node_type
-        [[ "$node_type" == "0" ]] && break
-
-        if [[ "$node_type" == "1" ]]; then
-            read -p "节点链接: " RAW_LINK
-            parse_proxy_link "$RAW_LINK"
-            if [[ -z "$R_ADDR" ]]; then echo -e "${RED}✘ 解析失败${PLAIN}"; pause; continue; fi
-            local name_safe; name_safe=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
-            local OUT_TAG="${name_safe:-hop-$(date +%s)}"
-            local OUT_JSON; OUT_JSON=$(link_to_outbound_json "$OUT_TAG")
-            [[ -z "$OUT_JSON" ]] && echo -e "${RED}✘ 不支持协议 (hop_type=$hop_type)${PLAIN}" && pause && continue
-            _write_one_node "$OUT_TAG" "$OUT_JSON"
-
-        elif [[ "$node_type" == "2" ]]; then
-            echo "1) SS  2) Socks5  3) HTTPS"
-            read -p "协议: " proto_choice
-            read -p "地址: " R_ADDR; read -p "端口: " R_PORT
-            R_USER=""; R_PASS=""; R_METHOD=""; R_TLS_INSECURE="0"
-            local OUT_TAG="hop-$(date +%s)" OUT_JSON
-            case $proto_choice in
-                1) read -p "加密: " R_METHOD; read -p "密码: " R_PASS; hop_type=1 ;;
-                2) read -p "用户 (可选): " R_USER; read -p "密码 (可选): " R_PASS; hop_type=2 ;;
-                3) read -p "用户 (可选): " R_USER; read -p "密码 (可选): " R_PASS
-                   read -p "跳过证书验证? [y/N]: " _sk
-                   [[ "$_sk" =~ ^[yY]$ ]] && R_TLS_INSECURE="1"
-                   hop_type=3 ;;
-                *) echo -e "${RED}非法输入${PLAIN}"; continue ;;
-            esac
-            OUT_JSON=$(link_to_outbound_json "$OUT_TAG")
-            _write_one_node "$OUT_TAG" "$OUT_JSON"
-
-        elif [[ "$node_type" == "3" ]]; then
-            clear; echo -e "${YELLOW}--- 订阅导入 ---${PLAIN}"
-            echo "1. 从 URL 拉取  2. 本地文件  0. 返回"
-            read -p "选择: " sub_mode; [[ "$sub_mode" == "0" ]] && continue
-            local raw_content=""
-            if [[ "$sub_mode" == "1" ]]; then
-                read -p "订阅 URL: " SUB_URL; [[ -z "$SUB_URL" ]] && continue
-                echo -e "${CYAN}拉取订阅...${PLAIN}"
-                raw_content=$(curl -sL --connect-timeout 10 --max-time 30 "$SUB_URL")
-                [[ -z "$raw_content" ]] && echo -e "${RED}✘ 拉取失败${PLAIN}" && pause && continue
-            elif [[ "$sub_mode" == "2" ]]; then
-                read -p "本地文件路径: " SUB_FILE
-                [[ ! -f "$SUB_FILE" ]] && echo -e "${RED}✘ 文件不存在${PLAIN}" && pause && continue
-                raw_content=$(cat "$SUB_FILE")
-            else continue; fi
-
-            local link_list="" decoded
-            decoded=$(echo "$raw_content" | tr -d '\r\n ' | base64 -d 2>/dev/null)
-            if echo "$decoded" | grep -qE '^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic)://'; then
-                link_list="$decoded"; echo -e "${CYAN}检测到 Base64 编码订阅，已解码${PLAIN}"
-            elif echo "$raw_content" | grep -qE '^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic)://'; then
-                link_list="$raw_content"; echo -e "${CYAN}检测到明文链接订阅${PLAIN}"
-            else
-                echo -e "${RED}✘ 无法识别订阅格式${PLAIN}"; pause; continue; fi
-
-            local total=0 ok=0 fail=0
-            while IFS= read -r line; do
-                [[ -z "$line" || "$line" =~ ^# ]] && continue
-                [[ ! "$line" =~ ^(ss|socks5?|https|vless|trojan|hysteria2|hy2|tuic):// ]] && continue
-                ((total++))
-                parse_proxy_link "$line"
-                if [[ -z "$R_ADDR" ]]; then
-                    echo -e "${RED}  [$total] 解析失败: ${line:0:60}${PLAIN}"; ((fail++)); continue; fi
-                local name_safe; name_safe=$(echo "$R_NAME" | tr ' ' '_' | tr -dc 'a-zA-Z0-9._-')
-                local base_tag="${name_safe:-sub-$total}" final_tag dup=1
-                final_tag="$base_tag"
-                while jq -e --arg t "$final_tag" '.outbounds[] | select(.tag==$t)' \
-                    "$CONFIG_FILE" > /dev/null 2>&1; do
-                    final_tag="${base_tag}-${dup}"; ((dup++)); done
-                local node_json; node_json=$(link_to_outbound_json "$final_tag")
-                if [[ -z "$node_json" ]]; then
-                    echo -e "${YELLOW}  [$total] 不支持协议，跳过: $R_ADDR${PLAIN}"; ((fail++)); continue; fi
-                make_tmp
-                jq --argjson obj "$node_json" '.outbounds += [$obj]' "$CONFIG_FILE" > "$_TMP_JSON"
-                if $SB_BIN check -c "$_TMP_JSON" > /dev/null 2>&1; then
-                    mv "$_TMP_JSON" "$CONFIG_FILE"; _TMP_JSON=""
-                    echo -e "${GREEN}  [$total] ✔ $final_tag ($R_ADDR:$R_PORT)${PLAIN}"; ((ok++))
-                else
-                    rm -f "$_TMP_JSON"; _TMP_JSON=""
-                    echo -e "${RED}  [$total] ✖ 校验失败: $R_ADDR${PLAIN}"; ((fail++)); fi
-            done <<< "$link_list"
-
-            echo -e "\n${YELLOW}共 $total 条，成功 ${GREEN}$ok${PLAIN}${YELLOW}，失败 ${RED}$fail${PLAIN}${YELLOW} 条${PLAIN}"
-            if (( ok > 0 )); then
-                systemctl restart sing-box && \
-                    echo -e "${GREEN}✔ 重启完成，$ok 节点已生效${PLAIN}" || \
-                    echo -e "${RED}✘ 重启失败，请检查配置${PLAIN}"
-            fi
-        fi
-        pause
     done
 }
 
