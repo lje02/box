@@ -153,6 +153,27 @@ init_config() {
         echo '{"log":{"level":"info"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[]}}' > "$CONFIG_FILE"
     fi
 }
+# ============================================================
+# 节点订阅辅助函数：刷新订阅文件
+# ============================================================
+refresh_sub() {
+    if [[ -d "/var/www/singbox-sub" ]]; then
+        # 读取缓存的复杂路径文件名，如果没有则默认兜底为 sub
+        local sub_file="sub"
+        [[ -f "/var/www/singbox-sub/.path_cache" ]] && sub_file=$(cat /var/www/singbox-sub/.path_cache)
+
+        # 清理旧的订阅文件，防止路径更改后残留被扫到
+        find /var/www/singbox-sub -maxdepth 1 -type f -not -name ".*" -not -name "*.py" -delete 2>/dev/null
+
+        # 将所有的 .link 文件合并并进行 Base64 编码
+        local count=$(ls -1 "$LINK_DIR"/*.link 2>/dev/null | wc -l)
+        if [[ $count -gt 0 ]]; then
+            cat "$LINK_DIR"/*.link | base64 -w 0 > "/var/www/singbox-sub/$sub_file"
+        else
+            echo "" > "/var/www/singbox-sub/$sub_file"
+        fi
+    fi
+}
 
 get_ip() {
     local mode=${1:-"all"}
@@ -1510,27 +1531,6 @@ add_outbound() {
             echo -e "${RED}  ✖ [$tag] 校验失败，已跳过${PLAIN}"; return 1
         fi
     }
-# ============================================================
-# 节点订阅辅助函数：刷新订阅文件
-# ============================================================
-refresh_sub() {
-    if [[ -d "/var/www/singbox-sub" ]]; then
-        # 读取缓存的复杂路径文件名，如果没有则默认兜底为 sub
-        local sub_file="sub"
-        [[ -f "/var/www/singbox-sub/.path_cache" ]] && sub_file=$(cat /var/www/singbox-sub/.path_cache)
-
-        # 清理旧的订阅文件，防止路径更改后残留被扫到
-        find /var/www/singbox-sub -maxdepth 1 -type f -not -name ".*" -not -name "*.py" -delete 2>/dev/null
-
-        # 将所有的 .link 文件合并并进行 Base64 编码
-        local count=$(ls -1 "$LINK_DIR"/*.link 2>/dev/null | wc -l)
-        if [[ $count -gt 0 ]]; then
-            cat "$LINK_DIR"/*.link | base64 -w 0 > "/var/www/singbox-sub/$sub_file"
-        else
-            echo "" > "/var/www/singbox-sub/$sub_file"
-        fi
-    fi
-}
 
 # ============================================================
 # 节点订阅主管理模块
