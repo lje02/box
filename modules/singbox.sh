@@ -1662,15 +1662,24 @@ manage_subscription() {
                     pause; continue
                 fi
 
+                # 【优化：记忆上一次的协议选择】
+                local LAST_PROTO; [[ -f "/etc/sing-box/.sub_proto" ]] && LAST_PROTO=$(cat /etc/sing-box/.sub_proto)
+                LAST_PROTO=${LAST_PROTO:-2} # 默认安全 HTTPS
+                
                 echo "1. 普通 HTTP (明文，易被墙)   2. 安全 HTTPS (防嗅探，需已有证书)"
-                read -p "请选择订阅协议 [1-2]: " sub_proto
+                read -p "请选择订阅协议 [当前/默认 ${LAST_PROTO}]: " sub_proto
+                sub_proto=${sub_proto:-$LAST_PROTO}
+                echo "$sub_proto" > /etc/sing-box/.sub_proto
 
                 local SUB_PORT EXEC_CMD SUB_URL
                 mkdir -p /var/www/singbox-sub
 
-                # 生成一个 16 位的随机复杂路径，相当于订阅密码，防止爬虫恶意扫描
+                # 生成随机复杂路径，防止爬虫恶意扫描
                 local SUB_PATH="sub_$(openssl rand -hex 8)"
                 echo "$SUB_PATH" > /var/www/singbox-sub/.path_cache
+
+                # 【优化：记忆上一次的端口选择，不随关闭服务而擦除】
+                local LAST_PORT; [[ -f "/etc/sing-box/.sub_port" ]] && LAST_PORT=$(cat /etc/sing-box/.sub_port)
 
                 if [[ "$sub_proto" == "2" ]]; then
                     read -p "请输入已申请证书的域名 (例如 node.example.com): " sub_domain
@@ -1680,16 +1689,16 @@ manage_subscription() {
                         pause; continue
                     fi
 
-                    read -p "请输入 HTTPS 订阅服务端口 (默认 8443): " SUB_PORT
-                    SUB_PORT=${SUB_PORT:-8443}
-                    if ! check_port "$SUB_PORT"; then pause; continue; fi
+                    LAST_PORT=${LAST_PORT:-8443} # 如果没有历史缓存，HTTPS 默认 8443
+                    read -p "请输入 HTTPS 订阅服务端口 (当前/默认 ${LAST_PORT}): " SUB_PORT
+                    SUB_PORT=${SUB_PORT:-$LAST_PORT}
+                    echo "$SUB_PORT" > /etc/sing-box/.sub_port
 
                     # 动态生成原生 Python HTTPS 服务器脚本
                     cat > /var/www/singbox-sub/https_server.py <<EOF
 import http.server, ssl
 server_address = ('0.0.0.0', $SUB_PORT)
 httpd = http.server.HTTPServer(server_address, http.server.SimpleHTTPRequestHandler)
-# 兼容新老版本 Python 的 SSL 上下文
 protocol = ssl.PROTOCOL_TLS_SERVER if hasattr(ssl, 'PROTOCOL_TLS_SERVER') else ssl.PROTOCOL_TLS
 context = ssl.SSLContext(protocol)
 context.load_cert_chain(certfile="$CERT_PATH", keyfile="$KEY_PATH")
@@ -1700,13 +1709,16 @@ EOF
                     EXEC_CMD="/usr/bin/python3 /var/www/singbox-sub/https_server.py"
                     SUB_URL="https://$sub_domain:$SUB_PORT/$SUB_PATH"
                 else
-                    read -p "请输入 HTTP 订阅服务端口 (默认 8080): " SUB_PORT
-                    SUB_PORT=${SUB_PORT:-8080}
-                    if ! check_port "$SUB_PORT"; then pause; continue; fi
+                    LAST_PORT=${LAST_PORT:-8080} # 如果没有历史缓存，HTTP 默认 8080
+                    read -p "请输入 HTTP 订阅服务端口 (当前/默认 ${LAST_PORT}): " SUB_PORT
+                    SUB_PORT=${SUB_PORT:-$LAST_PORT}
+                    echo "$SUB_PORT" > /etc/sing-box/.sub_port
 
                     EXEC_CMD="/usr/bin/python3 -m http.server $SUB_PORT"
                     SUB_URL="http://$(get_ip):$SUB_PORT/$SUB_PATH"
                 fi
+
+                if ! check_port "$SUB_PORT"; then pause; continue; fi
 
                 echo -e "${CYAN}生成最新订阅文件...${PLAIN}"
                 refresh_sub
@@ -1735,15 +1747,13 @@ EOF
                 echo -e "${BLUE}$SUB_URL${PLAIN}"
                 echo -e "${YELLOW}警告: 请妥善保管此链接，泄露将导致节点全盘暴露！${PLAIN}"
                 
-                # 将最终的 URL 写入缓存，方便在菜单 2 中直接查看
                 echo "$SUB_URL" > /var/www/singbox-sub/.url_cache
-                
                 pause ;;
 
             2)
                 if systemctl is-active --quiet singbox-sub 2>/dev/null && [[ -f "/var/www/singbox-sub/.url_cache" ]]; then
                     echo -e "\n你的专属订阅链接为:\n${BLUE}$(cat /var/www/singbox-sub/.url_cache)${PLAIN}"
-                    echo -e "${YELLOW}提示: 路径具有唯一性，请勿随意泄露。${PLAIN}"
+                    echo -e "${YELLOW}提示: 路径具有唯一性，每次开启都会随机变化以保证安全。${PLAIN}"
                 else
                     echo -e "\n${RED}✘ 订阅服务未开启，或链接缓存丢失！${PLAIN}"
                 fi
