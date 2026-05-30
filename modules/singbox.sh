@@ -432,8 +432,8 @@ add_node() {
                 CERT_PATH="/etc/sing-box/${p_type}.crt"; KEY_PATH="/etc/sing-box/${p_type}.key"
                 [[ ! -f "$CERT_PATH" ]] && openssl req -x509 -nodes \
                     -newkey ec:<(openssl ecparam -name prime256v1) \
-                    -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=amazon.com" -days 3650 2>/dev/null
-                SNI_NAME="amazon.com"; ALLOW_INS=1
+                    -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=icloud.com" -days 3650 2>/dev/null
+                SNI_NAME="icloud.com"; ALLOW_INS=1
             fi
 
             tls_json="{\"enabled\":true,\"certificate_path\":\"$CERT_PATH\",\"key_path\":\"$KEY_PATH\"}"
@@ -521,8 +521,8 @@ add_node() {
                 CERT_PATH="/etc/sing-box/anytls.crt"; KEY_PATH="/etc/sing-box/anytls.key"
                 [[ ! -f "$CERT_PATH" ]] && openssl req -x509 -nodes \
                     -newkey ec:<(openssl ecparam -name prime256v1) \
-                    -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=amazon.com" -days 3650 2>/dev/null
-                SNI_NAME="amazon.com"; ALLOW_INS=1
+                    -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=icloud.com" -days 3650 2>/dev/null
+                SNI_NAME="icloud.com"; ALLOW_INS=1
             fi
 
             make_tmp
@@ -902,6 +902,22 @@ parse_proxy_link() {
         R_ALPN=$(_qs_get "$qs" "alpn")
         local ins; ins=$(_qs_get "$qs" "allow_insecure")
         [[ "$ins" == "1" || "$ins" == "true" ]] && R_TLS_INSECURE="1"
+
+    elif [[ "$link" =~ ^anytls:// ]]; then
+        hop_type=8 # <-- 为 AnyTLS 分配新的 hop_type
+        content=$(echo "$link" | sed 's|anytls://||' | cut -d'#' -f1)
+        R_PASS=$(echo "$content" | cut -d'@' -f1)
+        host_port=$(echo "$content" | cut -d'@' -f2 | cut -d'?' -f1)
+        qs=$(echo "$content" | grep -o '?.*' | cut -c2-)
+        if [[ "$host_port" =~ ^\[([^\]]+)\]:([0-9]+)$ ]]; then
+            R_ADDR="${BASH_REMATCH[1]}"; R_PORT="${BASH_REMATCH[2]}"
+        else
+            R_ADDR=$(echo "$host_port" | cut -d':' -f1)
+            R_PORT=$(echo "$host_port" | cut -d':' -f2)
+        fi
+        R_SNI=$(_qs_get "$qs" "sni"); [[ -z "$R_SNI" ]] && R_SNI=$(_qs_get "$qs" "host")
+        local ins; ins=$(_qs_get "$qs" "insecure")
+        [[ "$ins" == "1" || "$ins" == "true" ]] && R_TLS_INSECURE="1"
     fi
 }
 
@@ -1025,6 +1041,16 @@ link_to_outbound_json() {
                 '{"type":"tuic","tag":$t,"server":$s,
                   "server_port":($p|tonumber),"uuid":$uuid,"password":$pw,
                   "congestion_control":"bbr","tls":$tls}')
+            ;;
+        8) # AnyTLS - 客户端/出站只需 password
+            local tls_obj
+            tls_obj=$(jq -n --arg sni "$R_SNI" --argjson ins "$ins_bool" \
+                '{"enabled":true,"server_name":$sni,"insecure":$ins,"utls":{"enabled":true,"fingerprint":"chrome"}}')
+            json=$(jq -n \
+                --arg t "$tag" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                --arg pw "$R_PASS" --argjson tls "$tls_obj" \
+                '{"type":"anytls","tag":$t,"server":$s,
+                  "server_port":($p|tonumber),"password":$pw,"tls":$tls}')
             ;;
         *) echo ""; return 1 ;;
     esac
