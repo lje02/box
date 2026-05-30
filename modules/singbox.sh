@@ -603,6 +603,11 @@ manage_configs() {
                 METHOD=$(echo "$CONF" | jq -r .method)
                 PASS=$(echo   "$CONF" | jq -r .password)
                 echo -e "${BLUE}ss://$(echo -n "$METHOD:$PASS" | base64 -w 0)@$IP:$PORT#$TAG${PLAIN}" ;;
+            anytls)
+                local PASS; PASS=$(echo "$CONF" | jq -r '.users[0].password // ""')
+                local INS;  INS=$(echo  "$CONF" | jq -r '.tls.insecure // false')
+                local IV=0; [[ "$INS" == "true" ]] && IV=1
+                echo -e "${BLUE}anytls://$PASS@$HOST:$PORT?sni=$SNI&insecure=$IV#$TAG${PLAIN}" ;;
             http)
                 local USER PASS
                 USER=$(echo "$CONF" | jq -r '.users[0].username // ""')
