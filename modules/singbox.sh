@@ -529,7 +529,6 @@ add_node() {
         9) # AnyTLS
             read -p "端口 (默认 443): " PORT; PORT=${PORT:-443}
             if ! check_port "$PORT"; then pause; return; fi
-            read -p "用户名 (默认 sekai): " USER; USER=${USER:-"sekai"}
             read -p "密码 (回车随机生成): " PASS; PASS=${PASS:-$(gen_pass)}
             TAG="anytls-${PORT}"
 
@@ -549,28 +548,15 @@ add_node() {
 
             make_tmp
             
-            # 使用 jq --argjson 完美注入官方默认的 padding_scheme 数组
-            jq --arg port "$PORT" --arg usr "$USER" --arg pass "$PASS" --arg tag "$TAG" \
+            # 严格遵循官方标准：保留服务端用于日志识别的 name，省略 padding_scheme 以触发内核默认填充
+            jq --arg port "$PORT" --arg pass "$PASS" --arg tag "$TAG" \
                --arg sni "$SNI_NAME" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
-               --argjson padding '[
-                 "stop=8",
-                 "0=30-30",
-                 "1=100-400",
-                 "2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000",
-                 "3=9-9,500-1000",
-                 "4=500-1000",
-                 "5=500-1000",
-                 "6=500-1000",
-                 "7=500-1000"
-               ]' \
                '.inbounds += [{"type":"anytls","tag":$tag,"listen":"::","listen_port":($port|tonumber),
-                 "users":[{"name":$usr,"password":$pass}],
-                 "padding_scheme":$padding,
+                 "users":[{"name":"default_user","password":$pass}],
                  "tls":{"enabled":true,"server_name":$sni,"certificate_path":$cert,"key_path":$key}}]' \
                "$CONFIG_FILE" > "$_TMP_JSON"
             
-            # 采用兼容绝大多数支持 AnyTLS 客户端的事实标准链接格式
-            LINK="anytls://${USER}:${PASS}@${IP}:${PORT}?sni=${SNI_NAME}&allow_insecure=${ALLOW_INS}#${TAG}"
+            LINK="anytls://${PASS}@${IP}:${PORT}?sni=${SNI_NAME}&allow_insecure=${ALLOW_INS}#${TAG}"
             ;;
     esac
 
