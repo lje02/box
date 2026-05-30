@@ -542,6 +542,7 @@ add_node() {
     if [[ -n "$_TMP_JSON" && -f "$_TMP_JSON" ]]; then
         if save_and_restart; then
             [[ -n "$LINK" ]] && echo "$LINK" > "$LINK_DIR/${TAG}.link"
+            refresh_sub
             echo -e "${GREEN}✔ 节点添加成功！${PLAIN}"
             echo -e "分享链接:\n${BLUE}$LINK${PLAIN}"
         fi
@@ -700,6 +701,7 @@ edit_node() {
             ' "$CONFIG_FILE" > "$_TMP_JSON"
             if save_and_restart; then
                 rm -f "$LINK_DIR/${TAG}.link"
+                refresh_sub
                 echo -e "${GREEN}✔ 节点及关联路由已删除${PLAIN}"
             fi
             pause; return
@@ -1508,6 +1510,158 @@ add_outbound() {
             echo -e "${RED}  ✖ [$tag] 校验失败，已跳过${PLAIN}"; return 1
         fi
     }
+# ============================================================
+# 节点订阅辅助函数：刷新订阅文件
+# ============================================================
+refresh_sub() {
+    if [[ -d "/var/www/singbox-sub" ]]; then
+        # 读取缓存的复杂路径文件名，如果没有则默认兜底为 sub
+        local sub_file="sub"
+        [[ -f "/var/www/singbox-sub/.path_cache" ]] && sub_file=$(cat /var/www/singbox-sub/.path_cache)
+
+        # 清理旧的订阅文件，防止路径更改后残留被扫到
+        find /var/www/singbox-sub -maxdepth 1 -type f -not -name ".*" -not -name "*.py" -delete 2>/dev/null
+
+        # 将所有的 .link 文件合并并进行 Base64 编码
+        local count=$(ls -1 "$LINK_DIR"/*.link 2>/dev/null | wc -l)
+        if [[ $count -gt 0 ]]; then
+            cat "$LINK_DIR"/*.link | base64 -w 0 > "/var/www/singbox-sub/$sub_file"
+        else
+            echo "" > "/var/www/singbox-sub/$sub_file"
+        fi
+    fi
+}
+
+# ============================================================
+# 节点订阅主管理模块
+# ============================================================
+manage_subscription() {
+    while true; do
+        clear
+        echo -e "${YELLOW}--- 节点订阅服务管理 ---${PLAIN}"
+        local sub_status
+        if systemctl is-active --quiet singbox-sub 2>/dev/null; then
+            sub_status="${GREEN}运行中${PLAIN}"
+        else
+            sub_status="${RED}已停止${PLAIN}"
+        fi
+        echo -e "当前状态: $sub_status"
+        echo "-------------------------"
+        echo "1. 开启/更新订阅服务 (生成安全 URL)"
+        echo "2. 查看我的订阅链接"
+        echo "3. 关闭订阅服务"
+        echo "0. 返回主菜单"
+        read -p "请选择: " sub_choice
+
+        case $sub_choice in
+            1)
+                local count=$(ls -1 "$LINK_DIR"/*.link 2>/dev/null | wc -l)
+                if [[ $count -eq 0 ]]; then
+                    echo -e "${RED}✘ 当前没有已保存的节点链接，请先去添加节点！${PLAIN}"
+                    pause; continue
+                fi
+
+                echo "1. 普通 HTTP (明文，易被墙)   2. 安全 HTTPS (防嗅探，需已有证书)"
+                read -p "请选择订阅协议 [1-2]: " sub_proto
+
+                local SUB_PORT EXEC_CMD SUB_URL
+                mkdir -p /var/www/singbox-sub
+
+                # 生成一个 16 位的随机复杂路径，相当于订阅密码，防止爬虫恶意扫描
+                local SUB_PATH="sub_$(openssl rand -hex 8)"
+                echo "$SUB_PATH" > /var/www/singbox-sub/.path_cache
+
+                if [[ "$sub_proto" == "2" ]]; then
+                    read -p "请输入已申请证书的域名 (例如 node.example.com): " sub_domain
+                    find_certs "$sub_domain"
+                    if [[ -z "$CERT_PATH" || -z "$KEY_PATH" ]]; then
+                        echo -e "${RED}✘ 未找到该域名的证书，请先在主菜单选 8 进行 ACME 申请！${PLAIN}"
+                        pause; continue
+                    fi
+
+                    read -p "请输入 HTTPS 订阅服务端口 (默认 8443): " SUB_PORT
+                    SUB_PORT=${SUB_PORT:-8443}
+                    if ! check_port "$SUB_PORT"; then pause; continue; fi
+
+                    # 动态生成原生 Python HTTPS 服务器脚本
+                    cat > /var/www/singbox-sub/https_server.py <<EOF
+import http.server, ssl
+server_address = ('0.0.0.0', $SUB_PORT)
+httpd = http.server.HTTPServer(server_address, http.server.SimpleHTTPRequestHandler)
+# 兼容新老版本 Python 的 SSL 上下文
+protocol = ssl.PROTOCOL_TLS_SERVER if hasattr(ssl, 'PROTOCOL_TLS_SERVER') else ssl.PROTOCOL_TLS
+context = ssl.SSLContext(protocol)
+context.load_cert_chain(certfile="$CERT_PATH", keyfile="$KEY_PATH")
+httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+print(f"HTTPS Subscription server running on port {$SUB_PORT}...")
+httpd.serve_forever()
+EOF
+                    EXEC_CMD="/usr/bin/python3 /var/www/singbox-sub/https_server.py"
+                    SUB_URL="https://$sub_domain:$SUB_PORT/$SUB_PATH"
+                else
+                    read -p "请输入 HTTP 订阅服务端口 (默认 8080): " SUB_PORT
+                    SUB_PORT=${SUB_PORT:-8080}
+                    if ! check_port "$SUB_PORT"; then pause; continue; fi
+
+                    EXEC_CMD="/usr/bin/python3 -m http.server $SUB_PORT"
+                    SUB_URL="http://$(get_ip):$SUB_PORT/$SUB_PATH"
+                fi
+
+                echo -e "${CYAN}生成最新订阅文件...${PLAIN}"
+                refresh_sub
+
+                # 创建 systemd 守护进程以保持后台常驻
+                cat > /etc/systemd/system/singbox-sub.service <<EOF
+[Unit]
+Description=Sing-box Subscription Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/singbox-sub
+ExecStart=$EXEC_CMD
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+                systemctl daemon-reload
+                systemctl enable --now singbox-sub >/dev/null 2>&1
+
+                echo -e "${GREEN}✔ 订阅服务开启成功！${PLAIN}"
+                echo -e "请在客户端导入以下专属订阅链接 (路径已随机加密):"
+                echo -e "${BLUE}$SUB_URL${PLAIN}"
+                echo -e "${YELLOW}警告: 请妥善保管此链接，泄露将导致节点全盘暴露！${PLAIN}"
+                
+                # 将最终的 URL 写入缓存，方便在菜单 2 中直接查看
+                echo "$SUB_URL" > /var/www/singbox-sub/.url_cache
+                
+                pause ;;
+
+            2)
+                if systemctl is-active --quiet singbox-sub 2>/dev/null && [[ -f "/var/www/singbox-sub/.url_cache" ]]; then
+                    echo -e "\n你的专属订阅链接为:\n${BLUE}$(cat /var/www/singbox-sub/.url_cache)${PLAIN}"
+                    echo -e "${YELLOW}提示: 路径具有唯一性，请勿随意泄露。${PLAIN}"
+                else
+                    echo -e "\n${RED}✘ 订阅服务未开启，或链接缓存丢失！${PLAIN}"
+                fi
+                pause ;;
+
+            3)
+                systemctl stop singbox-sub >/dev/null 2>&1
+                systemctl disable singbox-sub >/dev/null 2>&1
+                rm -f /etc/systemd/system/singbox-sub.service
+                systemctl daemon-reload
+                rm -rf /var/www/singbox-sub
+                echo -e "${GREEN}✔ 订阅服务已彻底关闭，相关缓存与脚本已清理。${PLAIN}"
+                pause ;;
+                
+            0) return ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
 
     while true; do
         clear
@@ -1659,6 +1813,7 @@ while true; do
     echo -e "  ${GREEN}9.${PLAIN} 添加出站/自动优选/轮询"
     echo -e " ${GREEN}10.${PLAIN} 修改/删除节点"
     echo -e " ${GREEN}11.${PLAIN} 日志查看"
+    echo -e " ${GREEN}12.${PLAIN} 一键订阅"
     echo -e "-----------------------------------------------"
     echo -e " ${GREEN}88${PLAIN} 启动  ${GREEN}99${PLAIN} 停止  ${GREEN}66${PLAIN} 重启  ${RED}77${PLAIN} 卸载  ${RED}0${PLAIN} 退出"
     echo -e "==============================================="
@@ -1676,6 +1831,7 @@ while true; do
         9)  add_outbound ;;
         10) edit_node ;;
         11) view_logs ;;
+        12) manage_subscription ;;
         88) echo -e "${YELLOW}启动...${PLAIN}"; systemctl start sing-box; sleep 1 ;;
         99) echo -e "${YELLOW}停止...${PLAIN}"; systemctl stop  sing-box; sleep 1 ;;
         66) echo -e "${YELLOW}重启...${PLAIN}"; systemctl restart sing-box; sleep 1 ;;
