@@ -368,10 +368,15 @@ add_node() {
 
     clear
     echo -e "${YELLOW}--- 添加节点配置 ---${PLAIN}"
-    echo " 1. VLESS + Reality       5. VLESS + WS + CF"
-    echo " 2. TUIC v5               6. Socks5"
-    echo " 3. Hysteria2             7. HTTPS Proxy"
-    echo " 4. Shadowsocks           8. Trojan"
+    echo " 1. VLESS + Reality"
+    echo " 2. TUIC v5"
+    echo " 3. Hysteria2"
+    echo " 4. Shadowsocks"
+    echo " 5. VLESS + WS + CF"
+    echo " 6. Socks5"
+    echo " 7. HTTPS Proxy"
+    echo " 8. Trojan"
+    echo " 9. AnyTLS"
     echo " 0. 返回"
     read -p "请选择 [0-8]: " choice
     [[ "$choice" == "0" || -z "$choice" ]] && return
@@ -499,6 +504,38 @@ add_node() {
                  "users":[{"username":$user,"password":$pass}]}]' \
                "$CONFIG_FILE" > "$_TMP_JSON"
             LINK="socks5://$USER:$PASS@$IP:$PORT#$TAG"
+            ;;
+        9) # AnyTLS
+            read -p "端口 (默认 443): " PORT; PORT=${PORT:-443}
+            if ! check_port "$PORT"; then pause; return; fi
+            read -p "密码 (回车随机生成): " PASS; PASS=${PASS:-$(gen_pass)}
+            TAG="anytls-${PORT}"
+
+            echo " 1. 自签名证书  2. 自动检测 ACME 证书 ($CERT_DIR)"
+            read -p "证书类型: " c_choice
+            if [[ "$c_choice" == "2" ]]; then
+                read -p "对应域名: " domain; find_certs "$domain"
+                [[ -z "$CERT_PATH" ]] && echo -e "${RED}✘ 未找到证书${PLAIN}" && pause && return
+                SNI_NAME="$domain"; ALLOW_INS=0
+            else
+                CERT_PATH="/etc/sing-box/anytls.crt"; KEY_PATH="/etc/sing-box/anytls.key"
+                [[ ! -f "$CERT_PATH" ]] && openssl req -x509 -nodes \
+                    -newkey ec:<(openssl ecparam -name prime256v1) \
+                    -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=amazon.com" -days 3650 2>/dev/null
+                SNI_NAME="amazon.com"; ALLOW_INS=1
+            fi
+
+            make_tmp
+            # AnyTLS inbounds 必须包含 users 数组配置 name 和 password，并结合 tls 模块
+            jq --arg port "$PORT" --arg pass "$PASS" --arg tag "$TAG" \
+               --arg sni "$SNI_NAME" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
+               '.inbounds += [{"type":"anytls","tag":$tag,"listen":"::","listen_port":($port|tonumber),
+                 "users":[{"name":"default_user","password":$pass}],
+                 "tls":{"enabled":true,"server_name":$sni,"certificate_path":$cert,"key_path":$key}}]' \
+               "$CONFIG_FILE" > "$_TMP_JSON"
+            
+            # 由于 AnyTLS 属于新协议，还没有公认的标准分享链接 scheme，我们可以自定义一个
+            LINK="anytls://$PASS@$IP:$PORT?sni=$SNI_NAME&insecure=$ALLOW_INS#$TAG"
             ;;
     esac
 
