@@ -1782,6 +1782,97 @@ update_kernel() {
     echo -e "${GREEN}✔ 当前版本: ${VER:-未知}${PLAIN}"; pause
 }
 
+# ============================================================
+# 一键部署 WARP 并对接 Sing-box 出站
+# ============================================================
+setup_warp_outbound() {
+    clear
+    echo -e "${YELLOW}--- 一键部署 WARP 并对接 Sing-box 出站 ---${PLAIN}"
+    
+    # 1. 检查并安装 warp-cli
+    if ! command -v warp-cli &> /dev/null; then
+        echo -e "${CYAN}检测到未安装 warp-cli，开始自动拉取并安装...${PLAIN}"
+        if command -v apt-get &> /dev/null; then
+            # Debian / Ubuntu 体系
+            apt-get update -y && apt-get install -y curl lsb-release gnupg
+            curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
+            apt-get update -y && apt-get install -y cloudflare-warp
+        elif command -v yum &> /dev/null || command -v dnf &> /dev/null; then
+            # CentOS / RHEL / AlmaLinux 体系
+            curl -fsSl https://pkg.cloudflareclient.com/cloudflare-warp-ascii.repo | tee /etc/yum.repos.d/cloudflare-warp.repo
+            if command -v dnf &> /dev/null; then
+                dnf install -y cloudflare-warp
+            else
+                yum install -y cloudflare-warp
+            fi
+        else
+            echo -e "${RED}✘ 不支持的系统包管理器，请手动安装 cloudflare-warp。${PLAIN}"
+            pause; return
+        fi
+    fi
+
+    # 2. 静默注册并配置本地 Socks5 代理模式
+    echo -e "\n${CYAN}配置 WARP 本地代理隧道...${PLAIN}"
+    
+    # 强制重置可能存在的旧状态
+    warp-cli --accept-tos disconnect 2>/dev/null
+    warp-cli --accept-tos delete 2>/dev/null
+    
+    # 执行全自动流：注册 -> 代理模式 -> 绑定端口 -> 连接
+    if warp-cli --accept-tos register; then
+        warp-cli --accept-tos mode proxy
+        warp-cli --accept-tos proxy port 40000
+        warp-cli --accept-tos connect
+        
+        echo -e "${YELLOW}等待 WARP 隧道建立...${PLAIN}"
+        sleep 3
+        
+        if warp-cli --accept-tos status | grep -qi "Connected"; then
+            echo -e "${GREEN}✔ WARP 代理已成功稳定运行在 127.0.0.1:40000${PLAIN}"
+        else
+            echo -e "${RED}✘ WARP 连接未生效，请检查服务器网络或尝试重启机器。${PLAIN}"
+            warp-cli --accept-tos status
+            pause; return
+        fi
+    else
+        echo -e "${RED}✘ WARP 注册请求被拒。${PLAIN}"
+        pause; return
+    fi
+
+    # 3. 注入 Sing-box 出站配置
+    echo -e "\n${CYAN}正在将 WARP 节点写入 Sing-box 出站配置...${PLAIN}"
+    make_tmp
+    
+    # 检查 outbounds 中是否已经存在 tag 为 warp-out 的节点，防重复写入
+    local has_warp
+    has_warp=$(jq 'any(.outbounds[]; .tag == "warp-out")' "$CONFIG_FILE")
+    
+    if [[ "$has_warp" == "true" ]]; then
+        echo -e "${YELLOW}检测到配置文件中已存在 Tag 为 [warp-out] 的出站节点，无需重复添加。${PLAIN}"
+    else
+        jq '.outbounds += [{
+            "type": "socks",
+            "tag": "warp-out",
+            "server": "127.0.0.1",
+            "server_port": 40000,
+            "version": "5"
+        }]' "$CONFIG_FILE" > "$_TMP_JSON"
+        
+        if save_and_restart; then
+            echo -e "${GREEN}✔ WARP 出站节点 (warp-out) 注入成功！${PLAIN}"
+            echo -e "-----------------------------------------------"
+            echo -e "${YELLOW}💡 进阶玩法提示：${PLAIN}"
+            echo -e "你现在可以进入主菜单的【4. 路由分流管理】 -> 【1. 添加分流规则】"
+            echo -e "将想要解锁的特定域名（如 netflix.com, openai.com）"
+            echo -e "目标出站统统指向 ${CYAN}warp-out${PLAIN} 即可实现精准解锁！"
+        else
+            echo -e "${RED}✘ 写入 Sing-box 配置失败，已回滚。${PLAIN}"
+        fi
+    fi
+    pause
+}
+
 enable_bbr() {
     echo -e "${YELLOW}检查 BBR 状态...${PLAIN}"
     local kv; kv=$(uname -r | cut -d- -f1)
@@ -1823,6 +1914,7 @@ while true; do
     echo -e " ${GREEN}10.${PLAIN} 修改/删除节点"
     echo -e " ${GREEN}11.${PLAIN} 日志查看"
     echo -e " ${GREEN}12.${PLAIN} 一键订阅"
+    echo -e " ${GREEN}13.${PLAIN} 一键部署WARP出站"
     echo -e "-----------------------------------------------"
     echo -e " ${GREEN}88${PLAIN} 启动  ${GREEN}99${PLAIN} 停止  ${GREEN}66${PLAIN} 重启  ${RED}77${PLAIN} 卸载  ${RED}0${PLAIN} 退出"
     echo -e "==============================================="
@@ -1841,6 +1933,7 @@ while true; do
         10) edit_node ;;
         11) view_logs ;;
         12) manage_subscription ;;
+        13) setup_warp_outbound ;;
         88) echo -e "${YELLOW}启动...${PLAIN}"; systemctl start sing-box; sleep 1 ;;
         99) echo -e "${YELLOW}停止...${PLAIN}"; systemctl stop  sing-box; sleep 1 ;;
         66) echo -e "${YELLOW}重启...${PLAIN}"; systemctl restart sing-box; sleep 1 ;;
