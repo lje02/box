@@ -1633,6 +1633,89 @@ add_outbound() {
         pause
     done
 }
+
+# ============================================================
+# 出站节点管理 (带关联路由安全清理)
+# ============================================================
+manage_outbounds() {
+    while true; do
+        clear
+        echo -e "${YELLOW}--- 出站节点管理 (Outbounds) ---${PLAIN}"
+        echo -e "当前配置文件中的出站节点："
+
+        # 获取所有出站节点的 Tag 和类型
+        local tags=($(jq -r '.outbounds[].tag' "$CONFIG_FILE"))
+        local types=($(jq -r '.outbounds[].type' "$CONFIG_FILE"))
+        local count=${#tags[@]}
+
+        if [[ $count -eq 0 ]]; then
+            echo -e "${RED}没有找到任何出站配置！${PLAIN}"
+            pause; return
+        fi
+
+        # 动态遍历列表并打印
+        for ((i=0; i<$count; i++)); do
+            local current_tag="${tags[$i]}"
+            local current_type="${types[$i]}"
+            
+            # 标记并保护系统保留出站 (不能删)
+            if [[ "$current_tag" == "direct" || "$current_tag" == "block" || "$current_tag" == "dns-out" ]]; then
+                echo -e "  ${GREEN}$((i+1)).${PLAIN} [系统内置] Tag: ${CYAN}${current_tag}${PLAIN} (类型: ${current_type})"
+            else
+                echo -e "  ${GREEN}$((i+1)).${PLAIN} [可删除]   Tag: ${CYAN}${current_tag}${PLAIN} (类型: ${current_type})"
+            fi
+        done
+
+        echo "-----------------------------------------------"
+        echo "0. 返回主菜单"
+        read -p "请输入要删除的节点序号: " del_idx
+
+        if [[ "$del_idx" == "0" ]]; then
+            return
+        elif [[ "$del_idx" -gt 0 && "$del_idx" -le "$count" ]]; then
+            local target_idx=$((del_idx-1))
+            local target_tag="${tags[$target_idx]}"
+
+            # 防呆保护机制：禁止删除维持网络运作的核心出站
+            if [[ "$target_tag" == "direct" || "$target_tag" == "block" || "$target_tag" == "dns-out" ]]; then
+                echo -e "${RED}✘ 警告: [ $target_tag ] 是维持 sing-box 正常运行的核心出站，禁止删除！${PLAIN}"
+                pause; continue
+            fi
+
+            echo -e "${YELLOW}确认要彻底删除出站节点 [ $target_tag ] 吗？(y/n)${PLAIN}"
+            read -p "选择: " confirm
+            if [[ "${confirm,,}" == "y" ]]; then
+                make_tmp
+                
+                # 核心逻辑：删除该出站，同时遍历 route 规则，把指向该出站的失效分流规则一并安全移除！
+                jq --arg tag "$target_tag" '
+                    del(.outbounds[] | select(.tag == $tag)) |
+                    if .route and .route.rules then
+                        .route.rules |= map(select(.outbound != $tag))
+                    else
+                        .
+                    end
+                ' "$CONFIG_FILE" > "$_TMP_JSON"
+
+                if save_and_restart; then
+                    echo -e "${GREEN}✔ 出站节点 [ $target_tag ] 及其关联的失效路由规则已成功清理！${PLAIN}"
+                    
+                    # 针对 WARP 的联动提示
+                    if [[ "$target_tag" == "warp-out" ]]; then
+                        echo -e "${YELLOW}提示: 如果你不想在后台继续运行 WARP 本地进程，可执行以下命令彻底卸载:${PLAIN}"
+                        echo -e "warp-cli --accept-tos disconnect && apt-get purge -y cloudflare-warp"
+                    fi
+                else
+                    echo -e "${RED}✘ 删除失败，配置文件已回滚。${PLAIN}"
+                fi
+            fi
+        else
+            echo -e "${RED}无效的序号输入！${PLAIN}"
+        fi
+        pause
+    done
+}
+
 # ============================================================
 # 节点订阅主管理模块
 # ============================================================
@@ -1911,6 +1994,7 @@ while true; do
     echo -e " ${GREEN}11.${PLAIN} 日志查看"
     echo -e " ${GREEN}12.${PLAIN} 一键订阅"
     echo -e " ${GREEN}13.${PLAIN} 一键部署WARP出站"
+    echo -e " ${GREEN}14.${PLAIN} 出站管理"
     echo -e "-----------------------------------------------"
     echo -e " ${GREEN}88${PLAIN} 启动  ${GREEN}99${PLAIN} 停止  ${GREEN}66${PLAIN} 重启  ${RED}77${PLAIN} 卸载  ${RED}0${PLAIN} 退出"
     echo -e "==============================================="
@@ -1930,6 +2014,7 @@ while true; do
         11) view_logs ;;
         12) manage_subscription ;;
         13) setup_warp_outbound ;;
+        14) manage_outbounds ;;
         88) echo -e "${YELLOW}启动...${PLAIN}"; systemctl start sing-box; sleep 1 ;;
         99) echo -e "${YELLOW}停止...${PLAIN}"; systemctl stop  sing-box; sleep 1 ;;
         66) echo -e "${YELLOW}重启...${PLAIN}"; systemctl restart sing-box; sleep 1 ;;
