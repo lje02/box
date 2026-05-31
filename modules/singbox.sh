@@ -222,9 +222,7 @@ show_status() {
     echo -e "运行状态: $STATUS\t\t开机自启: $ENABLE"
     echo -e "版本信息: ${BLUE}${VER:-未知}${PLAIN}\t\t内存占用: ${CYAN}${MEM}${PLAIN}"
     echo -e "WARP状态: $WARP_STATUS"
-    echo -e "----------------"
 }
-
 
 # ============================================================
 # [F04] 日志查看
