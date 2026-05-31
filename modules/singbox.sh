@@ -191,17 +191,40 @@ get_ip() {
 }
 
 show_status() {
-    local PID STATUS ENABLE VER MEM
+    local PID STATUS ENABLE VER MEM WARP_STATUS
     PID=$(systemctl show -p MainPID sing-box 2>/dev/null | cut -d= -f2)
     STATUS=$(systemctl is-active --quiet sing-box && echo -e "${GREEN}运行中${PLAIN}" || echo -e "${RED}已停止${PLAIN}")
     ENABLE=$(systemctl is-enabled --quiet sing-box 2>/dev/null && echo -e "${GREEN}已启用${PLAIN}" || echo -e "${RED}已禁用${PLAIN}")
     VER=$($SB_BIN version 2>/dev/null | awk '/version/ {print $3}')
     MEM=$(ps -o rss= -p "$PID" 2>/dev/null | awk '{printf "%.2fMB", $1/1024}' || echo "0MB")
+
+    # 获取 WARP 状态
+    if command -v warp-cli &> /dev/null; then
+        local raw_warp
+        raw_warp=$(warp-cli --accept-tos status 2>/dev/null | grep -i "Status update" | awk -F': ' '{print $2}')
+        # 清理可能存在的回车换行符，防止排版错乱
+        raw_warp=${raw_warp//$'\r'/} 
+        
+        if [[ "$raw_warp" == "Connected" ]]; then
+            WARP_STATUS="${GREEN}已连接 (Connected)${PLAIN}"
+        elif [[ "$raw_warp" == "Connecting" ]]; then
+            WARP_STATUS="${YELLOW}连接中 (Connecting)${PLAIN}"
+        elif [[ -n "$raw_warp" ]]; then
+            WARP_STATUS="${RED}${raw_warp}${PLAIN}"
+        else
+            WARP_STATUS="${RED}未运行或异常${PLAIN}"
+        fi
+    else
+        WARP_STATUS="${YELLOW}未安装${PLAIN}"
+    fi
+
     echo -e "${YELLOW}--- 服务监控 ---${PLAIN}"
     echo -e "运行状态: $STATUS\t\t开机自启: $ENABLE"
     echo -e "版本信息: ${BLUE}${VER:-未知}${PLAIN}\t\t内存占用: ${CYAN}${MEM}${PLAIN}"
+    echo -e "WARP状态: $WARP_STATUS"
     echo -e "----------------"
 }
+
 
 # ============================================================
 # [F04] 日志查看
