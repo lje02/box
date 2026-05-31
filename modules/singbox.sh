@@ -1826,7 +1826,7 @@ setup_warp_outbound() {
         echo -e "${YELLOW}等待 WARP 隧道建立...${PLAIN}"
         sleep 3
         
-        if warp-cli --accept-tos status | grep -qi "Connected"; then
+                if warp-cli --accept-tos status | grep -i "Connected" > /dev/null 2>&1; then
             echo -e "${GREEN}✔ WARP 代理已成功稳定运行在 127.0.0.1:40000${PLAIN}"
         else
             echo -e "${RED}✘ WARP 连接未生效，请检查服务器网络或尝试重启机器。${PLAIN}"
