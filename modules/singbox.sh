@@ -1781,9 +1781,9 @@ update_kernel() {
     local VER; VER=$($SB_BIN version 2>/dev/null | awk '/version/{print $3}')
     echo -e "${GREEN}✔ 当前版本: ${VER:-未知}${PLAIN}"; pause
 }
-
+    
 # ============================================================
-# 一键部署 WARP 并对接 Sing-box 出站
+# 一键部署 WARP 并对接 Sing-box 出站 (适配最新版 warp-cli)
 # ============================================================
 setup_warp_outbound() {
     clear
@@ -1793,13 +1793,11 @@ setup_warp_outbound() {
     if ! command -v warp-cli &> /dev/null; then
         echo -e "${CYAN}检测到未安装 warp-cli，开始自动拉取并安装...${PLAIN}"
         if command -v apt-get &> /dev/null; then
-            # Debian / Ubuntu 体系
             apt-get update -y && apt-get install -y curl lsb-release gnupg
             curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
             echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
             apt-get update -y && apt-get install -y cloudflare-warp
         elif command -v yum &> /dev/null || command -v dnf &> /dev/null; then
-            # CentOS / RHEL / AlmaLinux 体系
             curl -fsSl https://pkg.cloudflareclient.com/cloudflare-warp-ascii.repo | tee /etc/yum.repos.d/cloudflare-warp.repo
             if command -v dnf &> /dev/null; then
                 dnf install -y cloudflare-warp
@@ -1815,12 +1813,12 @@ setup_warp_outbound() {
     # 2. 静默注册并配置本地 Socks5 代理模式
     echo -e "\n${CYAN}配置 WARP 本地代理隧道...${PLAIN}"
     
-    # 强制重置可能存在的旧状态
+    # 强制重置可能存在的旧状态 (适配新版语法)
     warp-cli --accept-tos disconnect 2>/dev/null
-    warp-cli --accept-tos delete 2>/dev/null
+    warp-cli --accept-tos registration delete 2>/dev/null
     
-    # 执行全自动流：注册 -> 代理模式 -> 绑定端口 -> 连接
-    if warp-cli --accept-tos register; then
+    # 执行全自动流：注册 -> 代理模式 -> 绑定端口 -> 连接 (适配新版语法)
+    if warp-cli --accept-tos registration new; then
         warp-cli --accept-tos mode proxy
         warp-cli --accept-tos proxy port 40000
         warp-cli --accept-tos connect
@@ -1844,7 +1842,6 @@ setup_warp_outbound() {
     echo -e "\n${CYAN}正在将 WARP 节点写入 Sing-box 出站配置...${PLAIN}"
     make_tmp
     
-    # 检查 outbounds 中是否已经存在 tag 为 warp-out 的节点，防重复写入
     local has_warp
     has_warp=$(jq 'any(.outbounds[]; .tag == "warp-out")' "$CONFIG_FILE")
     
@@ -1864,8 +1861,7 @@ setup_warp_outbound() {
             echo -e "-----------------------------------------------"
             echo -e "${YELLOW}💡 进阶玩法提示：${PLAIN}"
             echo -e "你现在可以进入主菜单的【4. 路由分流管理】 -> 【1. 添加分流规则】"
-            echo -e "将想要解锁的特定域名（如 netflix.com, openai.com）"
-            echo -e "目标出站统统指向 ${CYAN}warp-out${PLAIN} 即可实现精准解锁！"
+            echo -e "将想要解锁的特定域名目标出站统统指向 ${CYAN}warp-out${PLAIN} 即可实现精准解锁！"
         else
             echo -e "${RED}✘ 写入 Sing-box 配置失败，已回滚。${PLAIN}"
         fi
