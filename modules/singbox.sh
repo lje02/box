@@ -1880,10 +1880,23 @@ EOF
 
 update_kernel() {
     echo -e "${CYAN}更新前自动备份...${PLAIN}"; auto_backup
-    echo -e "${YELLOW}更新 sing-box 内核...${PLAIN}"
+    
+    echo -e "${YELLOW}正在停止服务以解除文件锁定...${PLAIN}"
+    # 核心修复点：调用底层安装前，先杀掉进程释放文件锁
+    systemctl stop sing-box >/dev/null 2>&1
+    
+    echo -e "${YELLOW}开始更新 sing-box 内核...${PLAIN}"
     install_base
+    
+    # 覆盖完成后，重新启动服务加载新内核
+    systemctl start sing-box >/dev/null 2>&1
+    
+    # 稍微等一秒，确保服务完全启动后再去抓取版本号
+    sleep 1
+    
     local VER; VER=$($SB_BIN version 2>/dev/null | awk '/version/{print $3}')
-    echo -e "${GREEN}✔ 当前版本: ${VER:-未知}${PLAIN}"; pause
+    echo -e "${GREEN}✔ 更新完成！当前最新版本: ${VER:-未知}${PLAIN}"
+    pause
 }
     
 # ============================================================
